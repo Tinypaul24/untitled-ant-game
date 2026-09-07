@@ -49,7 +49,37 @@ public partial class GridManager : Node2D
 
         GD.Print("Grid created!");
     }
+    private bool HasAdjacentTunnel(Vector2I cell)
+{
+    // Check the four cardinal directions.
+    Vector2I[] directions =
+    {
+        new Vector2I(0, -1), // Up
+        new Vector2I(0, 1),  // Down
+        new Vector2I(-1, 0), // Left
+        new Vector2I(1, 0)   // Right
+    };
 
+    foreach (Vector2I direction in directions)
+    {
+        Vector2I neighbour = cell + direction;
+
+        // Make sure neighbour is inside the map.
+        if (neighbour.X < 0 || neighbour.X >= Width ||
+            neighbour.Y < 0 || neighbour.Y >= Height)
+        {
+            continue;
+        }
+
+        // Is the neighbouring cell a tunnel?
+        if (grid[neighbour.X, neighbour.Y] == TileType.Tunnel)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
     private void CreateStartingNest()
     {
         // Put the nest in the middle of the map.
@@ -82,6 +112,7 @@ public partial class GridManager : Node2D
 
         private void DigCell(Vector2I cell)
     {
+
         // Safety check.
         if (cell.X < 0 || cell.X >= Width ||
             cell.Y < 0 || cell.Y >= Height)
@@ -96,7 +127,7 @@ public partial class GridManager : Node2D
         }
         // Change logical tile.
         grid[cell.X, cell.Y] = TileType.Tunnel;
-
+    
         // Change visual tile.
         Ground.SetCell(
             cell,
@@ -121,9 +152,15 @@ public partial class GridManager : Node2D
         {
             return;
         }
-
+        {
         // Only dig dirt.
         if (grid[cell.X, cell.Y] != TileType.Dirt)
+        {
+            return;
+        }
+
+        // Only allow digging next to an existing tunnel.
+        if (!HasAdjacentTunnel(cell))
         {
             return;
         }
@@ -138,6 +175,7 @@ public partial class GridManager : Node2D
             tunnelTile
         );
 
-        GD.Print($"Dug tunnel at {cell}");
+            GD.Print($"Dug tunnel at {cell}");
+        }
     }
 }
