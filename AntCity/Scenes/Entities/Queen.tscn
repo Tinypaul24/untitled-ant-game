@@ -1,0 +1,8 @@
+[gd_scene format=3 uid="uid://6n21v5l2yj7n"]
+
+[ext_resource type="Script" uid="uid://dwaeryyyrtxc" path="res://AntCity/Scenes/Entities/Queen.cs" id="1_etnlr"]
+
+[node name="Queen" type="Node2D" unique_id=1790484239]
+script = ExtResource("1_etnlr")
+
+[node name="Sprite2D" type="Sprite2D" parent="." unique_id=1118511168]
