@@ -6,6 +6,8 @@
 [ext_resource type="PackedScene" uid="uid://6n21v5l2yj7n" path="res://AntCity/Scenes/Entities/Queen.tscn" id="4_lswqd"]
 [ext_resource type="Script" uid="uid://dv47ljg6ay2op" path="res://AntCity/Scripts/ColonyUI.cs" id="5_x5pno"]
 [ext_resource type="Script" uid="uid://urnio7nftndn" path="res://AntCity/Scripts/ColonyManager.cs" id="6_pbf1j"]
+[ext_resource type="Script" path="res://AntCity/Scripts/GameClock.cs" id="8_gameclock"]
+[ext_resource type="Script" path="res://AntCity/Scripts/SelectionManager.cs" id="9_selection"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_lswqd"]
 texture = ExtResource("3_r1jm0")
@@ -143,6 +145,12 @@ sources/0 = SubResource("TileSetAtlasSource_lswqd")
 [node name="Main" type="Node2D" unique_id=41876820]
 script = ExtResource("1_qf7qf")
 
+[node name="GameClock" type="Node" parent="."]
+script = ExtResource("8_gameclock")
+
+[node name="SelectionManager" type="Node2D" parent="."]
+script = ExtResource("9_selection")
+
 [node name="GridManager" type="Node2D" parent="." unique_id=90190562 node_paths=PackedStringArray("Ground")]
 script = ExtResource("2_ypjnq")
 Ground = NodePath("../Ground")
@@ -181,6 +189,22 @@ text = "Eggs: 0"
 [node name="CapacityLabel" type="Label" parent="UI/TopBar/Stats" unique_id=262524218]
 layout_mode = 2
 text = "Capacity: 0"
+
+[node name="LayEggButton" type="Button" parent="UI/TopBar/Stats" unique_id=1288401762]
+layout_mode = 2
+text = "Lay Egg"
+
+[node name="ClockLabel" type="Label" parent="UI"]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -110.0
+offset_top = 8.0
+offset_right = -10.0
+offset_bottom = 32.0
+grow_horizontal = 0
+horizontal_alignment = 2
+text = "00:00"
 
 [node name="ColonyManager" type="Node" parent="." unique_id=635932249]
 script = ExtResource("6_pbf1j")
