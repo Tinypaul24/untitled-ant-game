@@ -30,9 +30,9 @@ public partial class SelectionManager : Node2D
         {
             HandleMouseButton(mouseButton);
         }
-        else if (@event is InputEventMouseMotion mouseMotion && isPressed)
+        else if (@event is InputEventMouseMotion && isPressed)
         {
-            dragCurrent = mouseMotion.Position;
+            dragCurrent = GetGlobalMousePosition();
 
             if (!isDragging && (dragCurrent - dragStart).Length() > DragThreshold)
             {
@@ -83,8 +83,8 @@ public partial class SelectionManager : Node2D
             if (mouseButton.Pressed)
             {
                 isPressed = true;
-                dragStart = mouseButton.Position;
-                dragCurrent = mouseButton.Position;
+                dragStart = GetGlobalMousePosition();
+                dragCurrent = dragStart;
                 return;
             }
 
@@ -110,20 +110,29 @@ public partial class SelectionManager : Node2D
 
         if (mouseButton.ButtonIndex == MouseButton.Right && mouseButton.Pressed)
         {
-            IssueDigCommand(mouseButton);
+            IssueRightClickCommand(mouseButton);
         }
     }
 
-    private void IssueDigCommand(InputEventMouseButton mouseButton)
+    private void IssueRightClickCommand(InputEventMouseButton mouseButton)
     {
         if (selectedAnts.Count == 0)
         {
             return;
         }
 
-        Vector2I cell = gridManager.WorldToCell(mouseButton.Position);
+        Vector2I cell = gridManager.WorldToCell(GetGlobalMousePosition());
 
-        if (!gridManager.IsDirt(cell))
+        if (gridManager.IsTunnel(cell))
+        {
+            foreach (AntWorker ant in selectedAnts)
+            {
+                ant.CommandMove(cell);
+            }
+            return;
+        }
+
+        if (!gridManager.CanDig(cell))
         {
             return;
         }

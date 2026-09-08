@@ -99,6 +99,20 @@ public partial class AntWorker : Area2D
         IssueDigCommand(targetCell, gridManager.WorldToCell(Position));
     }
 
+    // Walk to an already-dug tunnel cell without digging anything.
+    public void CommandMove(Vector2I targetCell)
+    {
+        if (state == State.Digging)
+        {
+            digTimer.Stop();
+        }
+
+        Vector2I startCell = gridManager.WorldToCell(Position);
+        List<Vector2I> route = gridManager.FindTunnelPath(startCell, targetCell) ?? new List<Vector2I> { startCell };
+
+        FollowPath(route, OnMoveComplete);
+    }
+
     public void SetSelected(bool selected)
     {
         isSelected = selected;
@@ -176,6 +190,12 @@ public partial class AntWorker : Area2D
     {
         gridManager.Dig(pendingDigCell);
         FollowPath(new List<Vector2I> { pendingDigCell }, DigTowardTarget);
+    }
+
+    private void OnMoveComplete()
+    {
+        wanderHome = Position;
+        PickWanderTarget();
     }
 
     private void PickWanderTarget()
