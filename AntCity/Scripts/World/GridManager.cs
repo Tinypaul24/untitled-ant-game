@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Godot;
 
 public partial class GridManager : Node2D
@@ -5,9 +6,15 @@ public partial class GridManager : Node2D
     public enum TileType
     {
         Dirt,
-        Tunnel
+        Tunnel,
+        Rock,
+        FoodDeposit,
+        Grass,
+        Water,
+        Tree
     }
 
+    [ExportGroup("Grid")]
     [Export]
     public int Width { get; set; } = 40;
 
@@ -20,9 +27,56 @@ public partial class GridManager : Node2D
     [Export]
     public TileMapLayer Ground { get; set; }
 
+    [Export]
+    public ColonyManager ColonyManager { get; set; }
+
+    [ExportGroup("World Generation")]
+    // 0 picks a random seed every run. Any other value always reproduces the same world.
+    [Export]
+    public int Seed { get; set; } = 0;
+
+    [Export]
+    public int SurfaceHeight { get; set; } = 4;
+
+    [Export(PropertyHint.Range, "0,1,0.01")]
+    public float RockNoiseFrequency { get; set; } = 0.15f;
+
+    [Export(PropertyHint.Range, "-1,1,0.01")]
+    public float RockThreshold { get; set; } = 0.35f;
+
+    [Export]
+    public int RockFreeDepth { get; set; } = 2;
+
+    [Export(PropertyHint.Range, "0,1,0.01")]
+    public float FoodNoiseFrequency { get; set; } = 0.3f;
+
+    [Export(PropertyHint.Range, "-1,1,0.01")]
+    public float FoodThreshold { get; set; } = 0.62f;
+
+    [Export]
+    public int FoodPerDeposit { get; set; } = 5;
+
+    [Export(PropertyHint.Range, "0,1,0.01")]
+    public float WaterNoiseFrequency { get; set; } = 0.1f;
+
+    [Export(PropertyHint.Range, "-1,1,0.01")]
+    public float WaterThreshold { get; set; } = 0.55f;
+
+    // Chance for a non-water surface cell to spawn a tree.
+    [Export(PropertyHint.Range, "0,1,0.01")]
+    public float TreeChance { get; set; } = 0.12f;
+
     // These are the coordinates from your tileset.
-    private Vector2I dirtTile = new Vector2I(0, 1);
-    private Vector2I tunnelTile = new Vector2I(0, 0);
+    private static readonly Dictionary<TileType, Vector2I> TileAtlasCoords = new()
+    {
+        { TileType.Dirt, new Vector2I(0, 1) },
+        { TileType.Tunnel, new Vector2I(0, 0) },
+        { TileType.Rock, new Vector2I(8, 0) },
+        { TileType.FoodDeposit, new Vector2I(4, 1) },
+        { TileType.Grass, new Vector2I(0, 0) },
+        { TileType.Water, new Vector2I(4, 10) },
+        { TileType.Tree, new Vector2I(1, 4) },
+    };
 
     private TileType[,] grid;
 
@@ -30,112 +84,194 @@ public partial class GridManager : Node2D
     {
         grid = new TileType[Width, Height];
 
-        // Start the entire map as dirt.
-        for (int x = 0; x < Width; x++)
-        {
-            for (int y = 0; y < Height; y++)
-            {
-                grid[x, y] = TileType.Dirt;
-
-                Ground.SetCell(
-                    new Vector2I(x, y),
-                    0,
-                    dirtTile
-                );
-            }
-        }
-        
+        GenerateTerrain();
         CreateStartingNest();
 
         GD.Print("Grid created!");
     }
-    private bool HasAdjacentTunnel(Vector2I cell)
-{
-    // Check the four cardinal directions.
-    Vector2I[] directions =
+
+    private void GenerateTerrain()
     {
-        new Vector2I(0, -1), // Up
-        new Vector2I(0, 1),  // Down
-        new Vector2I(-1, 0), // Left
-        new Vector2I(1, 0)   // Right
-    };
+        // 0 means "no seed was set" -> roll a random one so every run gets a different world.
+        int actualSeed = Seed != 0 ? Seed : (int)GD.Randi();
+        GD.Print($"World seed: {actualSeed}");
 
-    foreach (Vector2I direction in directions)
-    {
-        Vector2I neighbour = cell + direction;
+        var rockNoise = new FastNoiseLite { Seed = actualSeed, Frequency = RockNoiseFrequency };
+        var foodNoise = new FastNoiseLite { Seed = actualSeed + 1, Frequency = FoodNoiseFrequency };
+        var waterNoise = new FastNoiseLite { Seed = actualSeed + 2, Frequency = WaterNoiseFrequency };
 
-        // Make sure neighbour is inside the map.
-        if (neighbour.X < 0 || neighbour.X >= Width ||
-            neighbour.Y < 0 || neighbour.Y >= Height)
+        // A seeded RNG (instead of GD.Randf) keeps tree placement reproducible for a given seed.
+        var rng = new RandomNumberGenerator();
+        rng.Seed = (ulong)actualSeed;
+
+        for (int x = 0; x < Width; x++)
         {
-            continue;
-        }
+            for (int y = 0; y < Height; y++)
+            {
+                TileType type;
 
-        // Is the neighbouring cell a tunnel?
-        if (grid[neighbour.X, neighbour.Y] == TileType.Tunnel)
-        {
-            return true;
+                if (y < SurfaceHeight)
+                {
+                    // Above ground: open grass dotted with water pools and trees.
+                    if (waterNoise.GetNoise2D(x, y) > WaterThreshold)
+                    {
+                        type = TileType.Water;
+                    }
+                    else if (rng.Randf() < TreeChance)
+                    {
+                        type = TileType.Tree;
+                    }
+                    else
+                    {
+                        type = TileType.Grass;
+                    }
+                }
+                else
+                {
+                    // Underground: mostly dirt, with rock pockets and food deposits woven through it.
+                    int depthBelowSurface = y - SurfaceHeight;
+                    if (depthBelowSurface >= RockFreeDepth && rockNoise.GetNoise2D(x, y) > RockThreshold)
+                    {
+                        type = TileType.Rock;
+                    }
+                    else if (foodNoise.GetNoise2D(x, y) > FoodThreshold)
+                    {
+                        type = TileType.FoodDeposit;
+                    }
+                    else
+                    {
+                        type = TileType.Dirt;
+                    }
+                }
+
+                SetTile(new Vector2I(x, y), type);
+            }
         }
     }
 
-    return false;
-}
+    private void SetTile(Vector2I cell, TileType type)
+    {
+        grid[cell.X, cell.Y] = type;
+        Ground.SetCell(cell, 0, TileAtlasCoords[type]);
+    }
+
+    private bool IsDiggable(TileType type)
+    {
+        return type == TileType.Dirt || type == TileType.FoodDeposit;
+    }
+
+    private bool HasAdjacentTunnel(Vector2I cell)
+    {
+        // Check the four cardinal directions.
+        Vector2I[] directions =
+        {
+            new Vector2I(0, -1), // Up
+            new Vector2I(0, 1),  // Down
+            new Vector2I(-1, 0), // Left
+            new Vector2I(1, 0)   // Right
+        };
+
+        foreach (Vector2I direction in directions)
+        {
+            Vector2I neighbour = cell + direction;
+
+            // Make sure neighbour is inside the map.
+            if (neighbour.X < 0 || neighbour.X >= Width ||
+                neighbour.Y < 0 || neighbour.Y >= Height)
+            {
+                continue;
+            }
+
+            // Is the neighbouring cell a tunnel?
+            if (grid[neighbour.X, neighbour.Y] == TileType.Tunnel)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private void CreateStartingNest()
     {
-        // Put the nest in the middle of the map.
+        // Put the nest in the middle of the underground area.
         int centerX = Width / 2;
-        int centerY = Height / 2;
+        int centerY = SurfaceHeight + (Height - SurfaceHeight) / 2;
 
-        // Create a small 5x5 room.
+        // Carve a small 5x5 room, clearing straight through any rock or deposits generation placed there.
         for (int x = centerX - 2; x <= centerX + 2; x++)
         {
             for (int y = centerY - 2; y <= centerY + 2; y++)
             {
-                DigCell(new Vector2I(x, y));
+                ForceDig(new Vector2I(x, y));
             }
+        }
+
+        // Carve an entrance shaft connecting the nest up to the surface.
+        for (int y = SurfaceHeight; y < centerY - 2; y++)
+        {
+            ForceDig(new Vector2I(centerX, y));
         }
 
         GD.Print("Starting nest created!");
     }
 
-        public override void _UnhandledInput(InputEvent @event)
+    // Used by world generation to guarantee the nest and its entrance shaft are always clear.
+    private void ForceDig(Vector2I cell)
+    {
+        if (cell.X < 0 || cell.X >= Width || cell.Y < 0 || cell.Y >= Height)
         {
-            if (@event is InputEventMouseButton mouseButton)
-            {
-                if (mouseButton.ButtonIndex == MouseButton.Left &&
-                    mouseButton.Pressed)
-                {
-                    DigAtMousePosition(mouseButton.Position);
-                }
-            }
+            return;
         }
 
-        private void DigCell(Vector2I cell)
+        SetTile(cell, TileType.Tunnel);
+    }
+
+    public override void _UnhandledInput(InputEvent @event)
     {
+        if (@event is InputEventMouseButton mouseButton)
+        {
+            if (mouseButton.ButtonIndex == MouseButton.Left &&
+                mouseButton.Pressed)
+            {
+                DigAtMousePosition(mouseButton.Position);
+            }
+        }
+    }
+
+    // Player-facing dig: only dirt and food deposits can be dug, and only next to an existing tunnel.
+    // Rock is a hard obstacle. Returns what was dug through so callers can react (e.g. food reward).
+    private bool TryDigCell(Vector2I cell, bool requireAdjacentTunnel, out TileType previousType)
+    {
+        previousType = TileType.Rock;
 
         // Safety check.
         if (cell.X < 0 || cell.X >= Width ||
             cell.Y < 0 || cell.Y >= Height)
         {
-            return;
+            return false;
         }
 
-        // Don't dig an already dug tile.
-        if (grid[cell.X, cell.Y] != TileType.Dirt)
+        TileType current = grid[cell.X, cell.Y];
+        if (!IsDiggable(current))
         {
-            return;
+            return false;
         }
-        // Change logical tile.
-        grid[cell.X, cell.Y] = TileType.Tunnel;
-    
-        // Change visual tile.
-        Ground.SetCell(
-            cell,
-            0,
-            tunnelTile
-        );
 
-    
+        if (requireAdjacentTunnel && !HasAdjacentTunnel(cell))
+        {
+            return false;
+        }
+
+        previousType = current;
+        SetTile(cell, TileType.Tunnel);
+
+        if (current == TileType.FoodDeposit)
+        {
+            ColonyManager?.AddFood(FoodPerDeposit);
+        }
+
+        return true;
     }
 
     private void DigAtMousePosition(Vector2 mousePosition)
@@ -146,36 +282,16 @@ public partial class GridManager : Node2D
             Mathf.FloorToInt(mousePosition.Y / CellSize)
         );
 
-        // Make sure we're inside the map.
-        if (cell.X < 0 || cell.X >= Width ||
-            cell.Y < 0 || cell.Y >= Height)
+        if (TryDigCell(cell, requireAdjacentTunnel: true, out TileType previous))
         {
-            return;
-        }
-        {
-        // Only dig dirt.
-        if (grid[cell.X, cell.Y] != TileType.Dirt)
-        {
-            return;
-        }
-
-        // Only allow digging next to an existing tunnel.
-        if (!HasAdjacentTunnel(cell))
-        {
-            return;
-        }
-
-        // Change the logical tile.
-        grid[cell.X, cell.Y] = TileType.Tunnel;
-
-        // Change the visual tile.
-        Ground.SetCell(
-            cell,
-            0,
-            tunnelTile
-        );
-
-            GD.Print($"Dug tunnel at {cell}");
+            if (previous == TileType.FoodDeposit)
+            {
+                GD.Print($"Harvested a food deposit at {cell}! +{FoodPerDeposit} food.");
+            }
+            else
+            {
+                GD.Print($"Dug tunnel at {cell}");
+            }
         }
     }
 }
