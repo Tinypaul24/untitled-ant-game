@@ -4,6 +4,8 @@
 [ext_resource type="Script" uid="uid://oc1k5vk5xbwt" path="res://AntCity/Scripts/World/GridManager.cs" id="2_ypjnq"]
 [ext_resource type="Texture2D" uid="uid://b28snqj8phy1g" path="res://AntCity/Textures/world_tileset.png" id="3_r1jm0"]
 [ext_resource type="PackedScene" uid="uid://6n21v5l2yj7n" path="res://AntCity/Scenes/Entities/Queen.tscn" id="4_lswqd"]
+[ext_resource type="Script" uid="uid://dv47ljg6ay2op" path="res://AntCity/Scripts/ColonyUI.cs" id="5_x5pno"]
+[ext_resource type="Script" uid="uid://urnio7nftndn" path="res://AntCity/Scripts/ColonyManager.cs" id="6_pbf1j"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_lswqd"]
 texture = ExtResource("3_r1jm0")
@@ -150,3 +152,35 @@ tile_set = SubResource("TileSet_xkah1")
 
 [node name="Queen" parent="." unique_id=1790484239 instance=ExtResource("4_lswqd")]
 position = Vector2(320, 192)
+
+[node name="UI" type="CanvasLayer" parent="." unique_id=875604172]
+script = ExtResource("5_x5pno")
+
+[node name="TopBar" type="PanelContainer" parent="UI" unique_id=1663653845]
+anchors_preset = 10
+anchor_right = 1.0
+offset_bottom = 40.0
+grow_horizontal = 2
+
+[node name="Stats" type="HBoxContainer" parent="UI/TopBar" unique_id=1712519324]
+layout_mode = 2
+theme_override_constants/separation = 20
+
+[node name="ColonyLabel" type="Label" parent="UI/TopBar/Stats" unique_id=1676468105]
+layout_mode = 2
+text = "Colony: 1"
+
+[node name="FoodLabel" type="Label" parent="UI/TopBar/Stats" unique_id=1038912110]
+layout_mode = 2
+text = "Food: 0"
+
+[node name="EggLabel" type="Label" parent="UI/TopBar/Stats" unique_id=1412693479]
+layout_mode = 2
+text = "Eggs: 0"
+
+[node name="CapacityLabel" type="Label" parent="UI/TopBar/Stats" unique_id=262524218]
+layout_mode = 2
+text = "Capacity: 0"
+
+[node name="ColonyManager" type="Node" parent="." unique_id=635932249]
+script = ExtResource("6_pbf1j")
