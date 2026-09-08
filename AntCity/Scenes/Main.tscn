@@ -145,6 +145,7 @@ sources/0 = SubResource("TileSetAtlasSource_lswqd")
 [node name="Main" type="Node2D" unique_id=41876820]
 script = ExtResource("1_qf7qf")
 
+[node name="GridManager" type="Node2D" parent="." unique_id=90190562 node_paths=PackedStringArray("Ground", "ColonyManager")]
 [node name="GameClock" type="Node" parent="."]
 script = ExtResource("8_gameclock")
 
@@ -154,6 +155,7 @@ script = ExtResource("9_selection")
 [node name="GridManager" type="Node2D" parent="." unique_id=90190562 node_paths=PackedStringArray("Ground")]
 script = ExtResource("2_ypjnq")
 Ground = NodePath("../Ground")
+ColonyManager = NodePath("../ColonyManager")
 
 [node name="Ground" type="TileMapLayer" parent="." unique_id=883923214]
 tile_set = SubResource("TileSet_xkah1")
