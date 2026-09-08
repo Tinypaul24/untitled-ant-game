@@ -3,7 +3,7 @@ using Godot;
 public partial class ColonyManager : Node
 {
     public int Ants { get; private set; } = 1;
-    public int Food { get; private set; } = 0;
+    public int Food { get; private set; } = 50;
     public int Egg  { get; private set; } = 0;
     public int Capacity { get; private set; } = 10;
 
