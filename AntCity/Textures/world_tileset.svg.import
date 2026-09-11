@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://ctkl4b7weq0cb"
-path="res://.godot/imported/Red Ant Up.png-7c1029bf5b3b41b5468d759af7e22262.ctex"
+uid="uid://dg85iiqemedx0"
+path="res://.godot/imported/world_tileset.svg-273e02226b59f032ef7643eede34fcee.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://AntCity/Textures/Red Ant Up.png"
-dest_files=["res://.godot/imported/Red Ant Up.png-7c1029bf5b3b41b5468d759af7e22262.ctex"]
+source_file="res://AntCity/Textures/world_tileset.svg"
+dest_files=["res://.godot/imported/world_tileset.svg-273e02226b59f032ef7643eede34fcee.ctex"]
 
 [params]
 
@@ -38,3 +38,6 @@ process/hdr_as_srgb=false
 process/hdr_clamp_exposure=false
 process/size_limit=0
 detect_3d/compress_to=1
+svg/scale=1.0
+editor/scale_with_editor_scale=false
+editor/convert_colors_with_editor_theme=false

@@ -1,7 +1,7 @@
 [gd_scene format=3]
 
 [ext_resource type="Script" path="res://AntCity/Scenes/Entities/AntWorker.cs" id="1_script"]
-[ext_resource type="Texture2D" uid="uid://bo1g3ytwvb0un" path="res://AntCity/Textures/Red Ant Down.png" id="2_ant"]
+[ext_resource type="Texture2D" path="res://AntCity/Textures/Red Ant Down.svg" id="2_ant"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_1"]
 size = Vector2(7, 7)
