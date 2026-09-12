@@ -95,6 +95,7 @@ public partial class GridManager : Node2D
         { TileType.Grass, new Vector2I(0, 1) },
         { TileType.Water, new Vector2I(1, 1) },
         { TileType.Tree, new Vector2I(2, 1) },
+        { TileType.FoodStorage, new Vector2I(3, 1) },
     };
 
     private readonly Dictionary<Vector2I, TileType> grid = new();
