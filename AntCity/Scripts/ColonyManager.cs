@@ -9,9 +9,13 @@ public partial class ColonyManager : Node
 
     public int Ants { get; private set; } = 1;
     public int Food { get; private set; } = 50;
+    public int FoodCapacity { get; private set; } = 75;
     public int Egg  { get; private set; } = 0;
     public int LarvaCount { get; private set; } = 0;
     public int Capacity { get; private set; } = 10;
+    public float HatchSpeedMultiplier { get; private set; } = 1f;
+
+    private int nurseryCellTotal;
 
     public int FoodCapacity { get; private set; } = 50;
 
@@ -46,6 +50,7 @@ public partial class ColonyManager : Node
 
     public int AddFood(int amount)
     {
+        Food = Mathf.Min(Food + amount, FoodCapacity);
         int newFood = Mathf.Min(Food + amount, FoodCapacity);
         int actuallyAdded = newFood - Food;
         Food = newFood;
@@ -143,6 +148,20 @@ public partial class ColonyManager : Node
         EmitSignal(SignalName.ColonyChanged);
     }
 
+    public void IncreaseFoodCapacity(int amount)
+    {
+        FoodCapacity += amount;
+        EmitSignal(SignalName.ColonyChanged);
+    }
+
+    // Every nursery cell (across any number of nursery rooms) chips away at hatch/maturity time, with diminishing returns.
+    public void AddNursery(int cellCount)
+    {
+        nurseryCellTotal += cellCount;
+        HatchSpeedMultiplier = Mathf.Pow(0.95f, nurseryCellTotal);
+        EmitSignal(SignalName.ColonyChanged);
+    }
+}
     private void ConsumeUpkeep()
     {
         int upkeep = Ants * FoodPerAntPerInterval + LarvaCount * FoodPerLarvaPerInterval;

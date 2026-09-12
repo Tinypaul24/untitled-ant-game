@@ -172,6 +172,10 @@ public partial class GridManager : Node2D
         return IsInBounds(cell) && IsWalkable(GetTile(cell));
     }
 
+    // Fired whenever a cell actually transitions to Tunnel, regardless of what caused the dig.
+    [Signal]
+    public delegate void CellDugEventHandler(Vector2I cell);
+
     public void Dig(Vector2I cell)
     {
         if (!IsInBounds(cell))
@@ -193,6 +197,8 @@ public partial class GridManager : Node2D
             foodRemaining.Remove(cell);
             GD.Print($"Tunneled through a food deposit at {cell}, destroying it. Forage it instead to collect its food.");
         }
+
+        EmitSignal(SignalName.CellDug, cell);
     }
 
     public bool IsFoodSource(Vector2I cell)

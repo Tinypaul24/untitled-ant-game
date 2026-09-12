@@ -15,7 +15,7 @@ public partial class Egg : Node2D
 
         Timer hatchTimer = GetNode<Timer>("HatchTimer");
         hatchTimer.OneShot = true;
-        hatchTimer.WaitTime = GD.RandRange(MinHatchSeconds, MaxHatchSeconds);
+        hatchTimer.WaitTime = GD.RandRange(MinHatchSeconds, MaxHatchSeconds) * colonyManager.HatchSpeedMultiplier;
         hatchTimer.Timeout += Hatch;
         hatchTimer.Start();
     }

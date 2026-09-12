@@ -9,6 +9,7 @@
 [ext_resource type="Script" uid="uid://7hc502qj6h4u" path="res://AntCity/Scripts/GameClock.cs" id="8_gameclock"]
 [ext_resource type="Script" uid="uid://ccuegw20fs0k" path="res://AntCity/Scripts/SelectionManager.cs" id="9_selection"]
 [ext_resource type="Script" path="res://AntCity/Scripts/CameraController.cs" id="10_camera"]
+[ext_resource type="Script" path="res://AntCity/Scripts/Buildings/BuildManager.cs" id="11_build"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_lswqd"]
 texture = ExtResource("3_r1jm0")
@@ -39,8 +40,16 @@ ColonyManager = NodePath("../ColonyManager")
 [node name="GameClock" type="Node" parent="." unique_id=2002387654]
 script = ExtResource("8_gameclock")
 
-[node name="SelectionManager" type="Node2D" parent="." unique_id=1954147057]
+[node name="SelectionManager" type="Node2D" parent="." unique_id=1954147057 node_paths=PackedStringArray("BuildManager")]
+z_index = 10
 script = ExtResource("9_selection")
+BuildManager = NodePath("../BuildManager")
+
+[node name="BuildManager" type="Node2D" parent="." node_paths=PackedStringArray("GridManager", "ColonyManager")]
+z_index = 10
+script = ExtResource("11_build")
+GridManager = NodePath("../GridManager")
+ColonyManager = NodePath("../ColonyManager")
 
 [node name="Ground" type="TileMapLayer" parent="." unique_id=883923214]
 tile_set = SubResource("TileSet_xkah1")
@@ -77,9 +86,47 @@ text = "Eggs: 0"
 layout_mode = 2
 text = "Capacity: 0"
 
-[node name="LayEggButton" type="Button" parent="UI/TopBar/Stats" unique_id=1288401762]
+[node name="BuildTray" type="HBoxContainer" parent="UI"]
+visible = false
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = -76.0
+offset_bottom = -40.0
+grow_horizontal = 2
+grow_vertical = 0
+theme_override_constants/separation = 10
+
+[node name="NestingChamberButton" type="Button" parent="UI/BuildTray"]
+layout_mode = 2
+
+[node name="GranaryButton" type="Button" parent="UI/BuildTray"]
+layout_mode = 2
+
+[node name="NurseryButton" type="Button" parent="UI/BuildTray"]
+layout_mode = 2
+
+[node name="BottomBar" type="PanelContainer" parent="UI"]
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = -40.0
+grow_horizontal = 2
+grow_vertical = 0
+
+[node name="Actions" type="HBoxContainer" parent="UI/BottomBar"]
+layout_mode = 2
+theme_override_constants/separation = 20
+
+[node name="LayEggButton" type="Button" parent="UI/BottomBar/Actions" unique_id=1288401762]
 layout_mode = 2
 text = "Lay Egg"
+
+[node name="BuildButton" type="Button" parent="UI/BottomBar/Actions"]
+layout_mode = 2
+text = "Build"
 
 [node name="ClockLabel" type="Label" parent="UI" unique_id=1546773717]
 anchors_preset = 1
