@@ -160,6 +160,10 @@ public partial class GridManager : Node2D
         return IsInBounds(cell) && GetTile(cell) == TileType.Tunnel;
     }
 
+    // Fired whenever a cell actually transitions to Tunnel, regardless of what caused the dig.
+    [Signal]
+    public delegate void CellDugEventHandler(Vector2I cell);
+
     public void Dig(Vector2I cell)
     {
         if (!IsInBounds(cell))
@@ -181,6 +185,8 @@ public partial class GridManager : Node2D
             ColonyManager?.AddFood(FoodPerDeposit);
             GD.Print($"Harvested a food deposit at {cell}! +{FoodPerDeposit} food.");
         }
+
+        EmitSignal(SignalName.CellDug, cell);
     }
 
     // The next cell to step into when walking a straight line from `from` toward `to`.

@@ -8,6 +8,9 @@ public partial class SelectionManager : Node2D
     private static readonly Color BoxFillColor = new Color(1f, 1f, 1f, 0.15f);
     private static readonly Color BoxBorderColor = new Color(1f, 1f, 1f, 0.8f);
 
+    [Export]
+    public BuildManager BuildManager { get; set; }
+
     private GridManager gridManager;
     private readonly List<AntWorker> selectedAnts = new List<AntWorker>();
 
@@ -78,6 +81,12 @@ public partial class SelectionManager : Node2D
 
     private void HandleMouseButton(InputEventMouseButton mouseButton)
     {
+        // BuildManager owns input entirely while a building is being placed.
+        if (BuildManager.IsPlacing)
+        {
+            return;
+        }
+
         if (mouseButton.ButtonIndex == MouseButton.Left)
         {
             if (mouseButton.Pressed)

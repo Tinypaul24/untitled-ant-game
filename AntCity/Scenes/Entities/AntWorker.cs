@@ -8,7 +8,8 @@ public partial class AntWorker : Area2D
     {
         Idle,
         Walking,
-        Digging
+        Digging,
+        Building
     }
 
     private const float MoveSpeed = 24f;
@@ -29,8 +30,10 @@ public partial class AntWorker : Area2D
     private Sprite2D sprite;
     private Timer digTimer;
     private Timer wanderTimer;
+    private Timer buildTimer;
     private GridManager gridManager;
     private SelectionManager selectionManager;
+    private BuildManager buildManager;
 
     private State state = State.Idle;
     private bool isSelected;
@@ -40,6 +43,8 @@ public partial class AntWorker : Area2D
     private Action onPathComplete;
     private Vector2I digTarget;
     private Vector2I pendingDigCell;
+    private Room pendingRoom;
+    private Vector2I? claimedJobCell;
 
     public override void _Ready()
     {
@@ -48,21 +53,26 @@ public partial class AntWorker : Area2D
         sprite = GetNode<Sprite2D>("Sprite2D");
         digTimer = GetNode<Timer>("DigTimer");
         wanderTimer = GetNode<Timer>("WanderTimer");
+        buildTimer = GetNode<Timer>("BuildTimer");
 
         gridManager = GetNode<GridManager>("/root/Main/GridManager");
         selectionManager = GetNode<SelectionManager>("/root/Main/SelectionManager");
+        buildManager = GetNode<BuildManager>("/root/Main/BuildManager");
 
         digTimer.OneShot = true;
         digTimer.WaitTime = DigSeconds;
         digTimer.Timeout += OnDigTimeout;
 
         wanderTimer.OneShot = true;
-        wanderTimer.Timeout += PickWanderTarget;
+        wanderTimer.Timeout += GoIdle;
+
+        buildTimer.OneShot = true;
+        buildTimer.Timeout += OnBuildTimeout;
 
         InputEvent += OnInputEvent;
 
         wanderHome = Position;
-        PickWanderTarget();
+        GoIdle();
     }
 
     public override void _Process(double delta)
@@ -90,22 +100,22 @@ public partial class AntWorker : Area2D
     // Route through existing tunnels to whichever tunnel cell is nearest the target, then dig a corridor the rest of the way.
     public void CommandDig(Vector2I targetCell)
     {
+        AbandonCurrentJob();
         IssueDigCommand(targetCell, targetCell);
     }
 
     // Ignore existing tunnels entirely and start digging a corridor from wherever she already is.
     public void CommandDigDirect(Vector2I targetCell)
     {
+        AbandonCurrentJob();
         IssueDigCommand(targetCell, gridManager.WorldToCell(Position));
     }
 
     // Walk to an already-dug tunnel cell without digging anything.
     public void CommandMove(Vector2I targetCell)
     {
-        if (state == State.Digging)
-        {
-            digTimer.Stop();
-        }
+        AbandonCurrentJob();
+        StopActiveTimers();
 
         Vector2I startCell = gridManager.WorldToCell(Position);
         List<Vector2I> route = gridManager.FindTunnelPath(startCell, targetCell) ?? new List<Vector2I> { startCell };
@@ -131,11 +141,8 @@ public partial class AntWorker : Area2D
 
     private void IssueDigCommand(Vector2I targetCell, Vector2I wallReferenceCell)
     {
-        if (state == State.Digging)
-        {
-            // Cancel the in-progress dig so it doesn't fire on the old cell later.
-            digTimer.Stop();
-        }
+        // Cancel whatever timed action was in progress so it doesn't fire against the old target later.
+        StopActiveTimers();
 
         digTarget = targetCell;
 
@@ -144,6 +151,64 @@ public partial class AntWorker : Area2D
         List<Vector2I> route = gridManager.FindTunnelPath(startCell, wallCell) ?? new List<Vector2I> { startCell };
 
         FollowPath(route, DigTowardTarget);
+    }
+
+    private void StopActiveTimers()
+    {
+        if (state == State.Digging)
+        {
+            digTimer.Stop();
+        }
+        else if (state == State.Building)
+        {
+            buildTimer.Stop();
+        }
+    }
+
+    // Release whatever job-board work is in flight so a manual command doesn't leave it stuck claimed forever.
+    private void AbandonCurrentJob()
+    {
+        if (claimedJobCell.HasValue)
+        {
+            buildManager.ReleaseClaim(claimedJobCell.Value);
+            claimedJobCell = null;
+        }
+
+        if (pendingRoom != null)
+        {
+            pendingRoom.FurnishClaimed = false;
+            pendingRoom = null;
+        }
+    }
+
+    // Look for open job-board work before falling back to aimless wandering.
+    private void GoIdle()
+    {
+        if (buildManager.TryClaimDigJob(Position, out Vector2I cell))
+        {
+            claimedJobCell = cell;
+            IssueDigCommand(cell, cell);
+            return;
+        }
+
+        if (buildManager.TryClaimFurnishJob(Position, out Room room))
+        {
+            CommandBuild(room);
+            return;
+        }
+
+        PickWanderTarget();
+    }
+
+    // Walk to a room's stand cell (already fully dug) and work its furnish timer.
+    private void CommandBuild(Room room)
+    {
+        pendingRoom = room;
+
+        Vector2I startCell = gridManager.WorldToCell(Position);
+        List<Vector2I> route = gridManager.FindTunnelPath(startCell, room.StandCell) ?? new List<Vector2I> { startCell };
+
+        FollowPath(route, StartBuilding);
     }
 
     private void FollowPath(List<Vector2I> cells, Action onComplete)
@@ -176,8 +241,9 @@ public partial class AntWorker : Area2D
 
         if (current == digTarget)
         {
+            claimedJobCell = null;
             wanderHome = Position;
-            PickWanderTarget();
+            GoIdle();
             return;
         }
 
@@ -192,10 +258,27 @@ public partial class AntWorker : Area2D
         FollowPath(new List<Vector2I> { pendingDigCell }, DigTowardTarget);
     }
 
+    private void StartBuilding()
+    {
+        state = State.Building;
+        buildTimer.WaitTime = BuildingDefs.All[pendingRoom.Type].FurnishSecondsPerCell * pendingRoom.CellCount;
+        buildTimer.Start();
+    }
+
+    private void OnBuildTimeout()
+    {
+        Room room = pendingRoom;
+        pendingRoom = null;
+        buildManager.ReportFurnishDone(room);
+
+        wanderHome = Position;
+        GoIdle();
+    }
+
     private void OnMoveComplete()
     {
         wanderHome = Position;
-        PickWanderTarget();
+        GoIdle();
     }
 
     private void PickWanderTarget()
