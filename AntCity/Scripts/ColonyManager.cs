@@ -15,6 +15,10 @@ public partial class ColonyManager : Node
 
     public int FoodCapacity { get; private set; } = 50;
 
+    public int PopulationUsed => Ants + Egg + LarvaCount;
+
+    public bool HasRoomForMorePopulation => PopulationUsed < Capacity;
+
     private double consumptionTimer;
     private int starvingIntervalStreak;
 

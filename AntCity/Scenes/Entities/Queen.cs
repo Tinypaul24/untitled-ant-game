@@ -17,6 +17,11 @@ public partial class Queen : Node2D
 
 	public void LayEgg()
 	{
+		if (!colonyManager.HasRoomForMorePopulation)
+		{
+			return;
+		}
+
 		if (!colonyManager.RemoveFood(EggFoodCost))
 		{
 			return;

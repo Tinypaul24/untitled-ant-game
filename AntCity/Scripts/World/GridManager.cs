@@ -12,7 +12,8 @@ public partial class GridManager : Node2D
         Grass,
         Water,
         Tree,
-        FoodStorage
+        FoodStorage,
+        NestChamber
     }
 
     private const int ChunkSize = 16;
@@ -67,6 +68,9 @@ public partial class GridManager : Node2D
     [Export]
     public int FoodStorageCapacityBonus { get; set; } = 20;
 
+    [Export]
+    public int NestChamberCapacityBonus { get; set; } = 5;
+
     [Export(PropertyHint.Range, "0,1,0.01")]
     public float WaterNoiseFrequency { get; set; } = 0.1f;
 
@@ -96,6 +100,7 @@ public partial class GridManager : Node2D
         { TileType.Water, new Vector2I(1, 1) },
         { TileType.Tree, new Vector2I(2, 1) },
         { TileType.FoodStorage, new Vector2I(3, 1) },
+        { TileType.NestChamber, new Vector2I(0, 2) },
     };
 
     private readonly Dictionary<Vector2I, TileType> grid = new();
@@ -241,6 +246,20 @@ public partial class GridManager : Node2D
         SetTile(cell, TileType.FoodStorage);
         ColonyManager?.IncreaseFoodCapacity(FoodStorageCapacityBonus);
         GD.Print($"Built a food storage room at {cell}! +{FoodStorageCapacityBonus} food capacity.");
+
+        return true;
+    }
+
+    public bool BuildNestChamber(Vector2I cell)
+    {
+        if (!IsInBounds(cell) || GetTile(cell) != TileType.Tunnel)
+        {
+            return false;
+        }
+
+        SetTile(cell, TileType.NestChamber);
+        ColonyManager?.IncreaseCapacity(NestChamberCapacityBonus);
+        GD.Print($"Built a nest chamber at {cell}! +{NestChamberCapacityBonus} population capacity.");
 
         return true;
     }
@@ -541,7 +560,7 @@ public partial class GridManager : Node2D
 
     private static bool IsWalkable(TileType type)
     {
-        return type == TileType.Tunnel || type == TileType.FoodStorage || type == TileType.Grass;
+        return type == TileType.Tunnel || type == TileType.FoodStorage || type == TileType.NestChamber || type == TileType.Grass;
     }
 
     private void CreateStartingNest()

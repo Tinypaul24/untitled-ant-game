@@ -13,6 +13,12 @@ public partial class AntWorker : Area2D
         Building
     }
 
+    private enum RoomType
+    {
+        FoodStorage,
+        NestChamber
+    }
+
     private const float MoveSpeed = 24f;
     private const float ArrivalDistance = 2f;
     private const float DigSeconds = 2f;
@@ -54,6 +60,7 @@ public partial class AntWorker : Area2D
     private Vector2I? forageTarget;
     private int carriedFood;
     private Vector2I buildStorageTarget;
+    private RoomType pendingRoomType;
 
     public override void _Ready()
     {
@@ -157,6 +164,16 @@ public partial class AntWorker : Area2D
 
     public void CommandBuildStorage(Vector2I targetCell)
     {
+        CommandBuildRoom(targetCell, RoomType.FoodStorage);
+    }
+
+    public void CommandBuildNestChamber(Vector2I targetCell)
+    {
+        CommandBuildRoom(targetCell, RoomType.NestChamber);
+    }
+
+    private void CommandBuildRoom(Vector2I targetCell, RoomType roomType)
+    {
         if (!gridManager.IsTunnel(targetCell))
         {
             return;
@@ -165,6 +182,7 @@ public partial class AntWorker : Area2D
         StopCurrentTask();
 
         buildStorageTarget = targetCell;
+        pendingRoomType = roomType;
 
         Vector2I startCell = gridManager.WorldToCell(Position);
         List<Vector2I> route = gridManager.FindTunnelPath(startCell, targetCell) ?? new List<Vector2I> { startCell };
@@ -343,7 +361,15 @@ public partial class AntWorker : Area2D
 
     private void OnBuildTimeout()
     {
-        gridManager.BuildFoodStorage(buildStorageTarget);
+        if (pendingRoomType == RoomType.NestChamber)
+        {
+            gridManager.BuildNestChamber(buildStorageTarget);
+        }
+        else
+        {
+            gridManager.BuildFoodStorage(buildStorageTarget);
+        }
+
         wanderHome = Position;
         PickWanderTarget();
     }

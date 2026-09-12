@@ -132,6 +132,15 @@ public partial class SelectionManager : Node2D
             return;
         }
 
+        if (mouseButton.AltPressed && gridManager.IsTunnel(cell))
+        {
+            foreach (AntWorker ant in selectedAnts)
+            {
+                ant.CommandBuildNestChamber(cell);
+            }
+            return;
+        }
+
         if (gridManager.IsTunnel(cell))
         {
             foreach (AntWorker ant in selectedAnts)
