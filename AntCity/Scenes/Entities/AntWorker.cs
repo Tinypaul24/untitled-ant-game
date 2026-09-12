@@ -9,15 +9,8 @@ public partial class AntWorker : Area2D
         Idle,
         Walking,
         Digging,
-        Building
         Foraging,
         Building
-    }
-
-    private enum RoomType
-    {
-        FoodStorage,
-        NestChamber
     }
 
     private const float MoveSpeed = 24f;
@@ -31,8 +24,6 @@ public partial class AntWorker : Area2D
     private const int ForageCarryCapacity = 5;
     private const int HarvestPerTick = 1;
 
-    private const float BuildStorageSeconds = 3f;
-
     private static readonly Color SelectionRingColor = new Color(1f, 1f, 0.4f);
 
     private static readonly Texture2D UpTexture = GD.Load<Texture2D>("res://AntCity/Textures/Red Ant Up.svg");
@@ -43,14 +34,11 @@ public partial class AntWorker : Area2D
     private Sprite2D sprite;
     private Timer digTimer;
     private Timer wanderTimer;
-    private Timer buildTimer;
-    private GridManager gridManager;
-    private SelectionManager selectionManager;
-    private BuildManager buildManager;
     private Timer forageTimer;
     private Timer buildTimer;
     private GridManager gridManager;
     private SelectionManager selectionManager;
+    private BuildManager buildManager;
     private ColonyManager colonyManager;
 
     private State state = State.Idle;
@@ -61,13 +49,11 @@ public partial class AntWorker : Area2D
     private Action onPathComplete;
     private Vector2I digTarget;
     private Vector2I pendingDigCell;
-    private Room pendingRoom;
-    private Vector2I? claimedJobCell;
     private Action pendingDigCallback;
     private Vector2I? forageTarget;
     private int carriedFood;
-    private Vector2I buildStorageTarget;
-    private RoomType pendingRoomType;
+    private Room pendingRoom;
+    private Vector2I? claimedJobCell;
 
     public override void _Ready()
     {
@@ -76,15 +62,13 @@ public partial class AntWorker : Area2D
         sprite = GetNode<Sprite2D>("Sprite2D");
         digTimer = GetNode<Timer>("DigTimer");
         wanderTimer = GetNode<Timer>("WanderTimer");
+        forageTimer = GetNode<Timer>("ForageTimer");
         buildTimer = GetNode<Timer>("BuildTimer");
 
         gridManager = GetNode<GridManager>("/root/Main/GridManager");
         selectionManager = GetNode<SelectionManager>("/root/Main/SelectionManager");
         buildManager = GetNode<BuildManager>("/root/Main/BuildManager");
         colonyManager = GetNode<ColonyManager>("/root/Main/ColonyManager");
-
-        forageTimer = GetNode<Timer>("ForageTimer");
-        buildTimer = GetNode<Timer>("BuildTimer");
 
         digTimer.OneShot = true;
         digTimer.WaitTime = DigSeconds;
@@ -95,14 +79,10 @@ public partial class AntWorker : Area2D
         forageTimer.Timeout += OnForageTimeout;
 
         buildTimer.OneShot = true;
-        buildTimer.WaitTime = BuildStorageSeconds;
         buildTimer.Timeout += OnBuildTimeout;
 
         wanderTimer.OneShot = true;
         wanderTimer.Timeout += GoIdle;
-
-        buildTimer.OneShot = true;
-        buildTimer.Timeout += OnBuildTimeout;
 
         InputEvent += OnInputEvent;
 
@@ -150,7 +130,6 @@ public partial class AntWorker : Area2D
     public void CommandMove(Vector2I targetCell)
     {
         AbandonCurrentJob();
-        StopActiveTimers();
         StopCurrentTask();
 
         Vector2I startCell = gridManager.WorldToCell(Position);
@@ -159,7 +138,7 @@ public partial class AntWorker : Area2D
         FollowPath(route, OnMoveComplete);
     }
 
-
+    // Walk to a food source, harvest it in ticks up to carry capacity, then bring it back.
     public void CommandForage(Vector2I targetCell)
     {
         if (!gridManager.IsFoodSource(targetCell))
@@ -167,6 +146,7 @@ public partial class AntWorker : Area2D
             return;
         }
 
+        AbandonCurrentJob();
         StopCurrentTask();
 
         forageTarget = targetCell;
@@ -176,34 +156,6 @@ public partial class AntWorker : Area2D
         List<Vector2I> route = gridManager.FindTunnelPath(startCell, nearestTunnel) ?? new List<Vector2I> { startCell };
 
         FollowPath(route, ApproachForageTarget);
-    }
-
-    public void CommandBuildStorage(Vector2I targetCell)
-    {
-        CommandBuildRoom(targetCell, RoomType.FoodStorage);
-    }
-
-    public void CommandBuildNestChamber(Vector2I targetCell)
-    {
-        CommandBuildRoom(targetCell, RoomType.NestChamber);
-    }
-
-    private void CommandBuildRoom(Vector2I targetCell, RoomType roomType)
-    {
-        if (!gridManager.IsTunnel(targetCell))
-        {
-            return;
-        }
-
-        StopCurrentTask();
-
-        buildStorageTarget = targetCell;
-        pendingRoomType = roomType;
-
-        Vector2I startCell = gridManager.WorldToCell(Position);
-        List<Vector2I> route = gridManager.FindTunnelPath(startCell, targetCell) ?? new List<Vector2I> { startCell };
-
-        FollowPath(route, StartBuildingStorage);
     }
 
     public void SetSelected(bool selected)
@@ -225,7 +177,6 @@ public partial class AntWorker : Area2D
     private void IssueDigCommand(Vector2I targetCell, Vector2I wallReferenceCell)
     {
         // Cancel whatever timed action was in progress so it doesn't fire against the old target later.
-        StopActiveTimers();
         StopCurrentTask();
 
         digTarget = targetCell;
@@ -237,16 +188,29 @@ public partial class AntWorker : Area2D
         FollowPath(route, DigTowardTarget);
     }
 
-    private void StopActiveTimers()
+    // Stops whatever timed task is running, refunds any carried food, and clears the forage target.
+    private void StopCurrentTask()
     {
         if (state == State.Digging)
         {
             digTimer.Stop();
         }
+        else if (state == State.Foraging)
+        {
+            forageTimer.Stop();
+        }
         else if (state == State.Building)
         {
             buildTimer.Stop();
         }
+
+        if (carriedFood > 0)
+        {
+            colonyManager.AddFood(carriedFood);
+            carriedFood = 0;
+        }
+
+        forageTarget = null;
     }
 
     // Release whatever job-board work is in flight so a manual command doesn't leave it stuck claimed forever.
@@ -287,6 +251,8 @@ public partial class AntWorker : Area2D
     // Walk to a room's stand cell (already fully dug) and work its furnish timer.
     private void CommandBuild(Room room)
     {
+        StopCurrentTask();
+
         pendingRoom = room;
 
         Vector2I startCell = gridManager.WorldToCell(Position);
@@ -345,6 +311,7 @@ public partial class AntWorker : Area2D
         FollowPath(new List<Vector2I> { dugCell }, callback);
     }
 
+    // Shared by plain digging and forage-approach: walk into the next cell if it's already open, otherwise dig through it first.
     private void StepOrDig(Vector2I target, Action onStepComplete)
     {
         Vector2I current = gridManager.WorldToCell(Position);
@@ -403,7 +370,7 @@ public partial class AntWorker : Area2D
         {
             forageTarget = null;
             wanderHome = Position;
-            PickWanderTarget();
+            GoIdle();
             return;
         }
 
@@ -427,52 +394,7 @@ public partial class AntWorker : Area2D
 
         forageTarget = null;
         wanderHome = Position;
-        PickWanderTarget();
-    }
-
-    private void StartBuildingStorage()
-    {
-        state = State.Building;
-        buildTimer.Start();
-    }
-
-    private void OnBuildTimeout()
-    {
-        if (pendingRoomType == RoomType.NestChamber)
-        {
-            gridManager.BuildNestChamber(buildStorageTarget);
-        }
-        else
-        {
-            gridManager.BuildFoodStorage(buildStorageTarget);
-        }
-
-        wanderHome = Position;
-        PickWanderTarget();
-    }
-
-    private void StopCurrentTask()
-    {
-        if (state == State.Digging)
-        {
-            digTimer.Stop();
-        }
-        else if (state == State.Foraging)
-        {
-            forageTimer.Stop();
-        }
-        else if (state == State.Building)
-        {
-            buildTimer.Stop();
-        }
-
-        if (carriedFood > 0)
-        {
-            colonyManager.AddFood(carriedFood);
-            carriedFood = 0;
-        }
-
-        forageTarget = null;
+        GoIdle();
     }
 
     private static bool IsAdjacent(Vector2I a, Vector2I b)

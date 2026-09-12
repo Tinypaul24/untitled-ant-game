@@ -132,24 +132,6 @@ public partial class SelectionManager : Node2D
 
         Vector2I cell = gridManager.WorldToCell(GetGlobalMousePosition());
 
-        if (mouseButton.CtrlPressed && gridManager.IsTunnel(cell))
-        {
-            foreach (AntWorker ant in selectedAnts)
-            {
-                ant.CommandBuildStorage(cell);
-            }
-            return;
-        }
-
-        if (mouseButton.AltPressed && gridManager.IsTunnel(cell))
-        {
-            foreach (AntWorker ant in selectedAnts)
-            {
-                ant.CommandBuildNestChamber(cell);
-            }
-            return;
-        }
-
         if (gridManager.IsTunnel(cell))
         {
             foreach (AntWorker ant in selectedAnts)
