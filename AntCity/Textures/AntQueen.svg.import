@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://b28snqj8phy1g"
-path="res://.godot/imported/world_tileset.png-40e2a5c01416d7eae3b68b2fb01efe66.ctex"
+uid="uid://b1u06tlwt2u83"
+path="res://.godot/imported/AntQueen.svg-e46aae9bf87a2422a49d409ca68a538b.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://AntCity/Textures/world_tileset.png"
-dest_files=["res://.godot/imported/world_tileset.png-40e2a5c01416d7eae3b68b2fb01efe66.ctex"]
+source_file="res://AntCity/Textures/AntQueen.svg"
+dest_files=["res://.godot/imported/AntQueen.svg-e46aae9bf87a2422a49d409ca68a538b.ctex"]
 
 [params]
 
@@ -38,3 +38,6 @@ process/hdr_as_srgb=false
 process/hdr_clamp_exposure=false
 process/size_limit=0
 detect_3d/compress_to=1
+svg/scale=1.0
+editor/scale_with_editor_scale=false
+editor/convert_colors_with_editor_theme=false

@@ -1,7 +1,7 @@
 [gd_scene format=3]
 
 [ext_resource type="Script" path="res://AntCity/Scenes/Entities/Larva.cs" id="1_script"]
-[ext_resource type="Texture2D" uid="uid://daobkv761cecp" path="res://AntCity/Textures/Ant_Larva.png" id="2_larva"]
+[ext_resource type="Texture2D" path="res://AntCity/Textures/Ant_Larva.svg" id="2_larva"]
 
 [node name="Larva" type="Node2D"]
 script = ExtResource("1_script")
