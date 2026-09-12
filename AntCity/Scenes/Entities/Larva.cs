@@ -12,6 +12,7 @@ public partial class Larva : Node2D
     public override void _Ready()
     {
         colonyManager = GetNode<ColonyManager>("/root/Main/ColonyManager");
+        colonyManager.AddLarva();
 
         Timer matureTimer = GetNode<Timer>("MatureTimer");
         matureTimer.OneShot = true;
@@ -22,6 +23,7 @@ public partial class Larva : Node2D
 
     private void Mature()
     {
+        colonyManager.RemoveLarva();
         colonyManager.AddAnt();
 
         Node2D ant = AntWorkerScene.Instantiate<Node2D>();
