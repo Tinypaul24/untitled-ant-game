@@ -11,7 +11,9 @@ public partial class GridManager : Node2D
         FoodDeposit,
         Grass,
         Water,
-        Tree
+        Tree,
+        FoodStorage,
+        NestChamber
     }
 
     private const int ChunkSize = 16;
@@ -60,14 +62,20 @@ public partial class GridManager : Node2D
     [Export]
     public int FoodPerDeposit { get; set; } = 5;
 
+    [Export]
+    public int FoodPerTree { get; set; } = 3;
+
+    [Export]
+    public int FoodStorageCapacityBonus { get; set; } = 20;
+
+    [Export]
+    public int NestChamberCapacityBonus { get; set; } = 5;
+
     [Export(PropertyHint.Range, "0,1,0.01")]
     public float WaterNoiseFrequency { get; set; } = 0.1f;
 
     [Export(PropertyHint.Range, "-1,1,0.01")]
     public float WaterThreshold { get; set; } = 0.55f;
-
-    [Export(PropertyHint.Range, "0,1,0.01")]
-    public float TreeNoiseFrequency { get; set; } = 0.4f;
 
     // Roughly the fraction of surface tiles (that aren't water) that end up as trees.
     [Export(PropertyHint.Range, "0,1,0.01")]
@@ -91,15 +99,19 @@ public partial class GridManager : Node2D
         { TileType.Grass, new Vector2I(0, 1) },
         { TileType.Water, new Vector2I(1, 1) },
         { TileType.Tree, new Vector2I(2, 1) },
+        { TileType.FoodStorage, new Vector2I(3, 1) },
+        { TileType.NestChamber, new Vector2I(0, 2) },
     };
 
     private readonly Dictionary<Vector2I, TileType> grid = new();
     private readonly HashSet<Vector2I> generatedChunks = new();
 
+    private readonly Dictionary<Vector2I, int> foodRemaining = new();
+
     private FastNoiseLite rockNoise;
     private FastNoiseLite foodNoise;
     private FastNoiseLite waterNoise;
-    private FastNoiseLite treeNoise;
+    private int treeSalt;
 
     // World cell the starting nest is centered on. Useful for e.g. pointing the camera at the colony.
     public Vector2I NestCenterCell { get; private set; }
@@ -157,7 +169,7 @@ public partial class GridManager : Node2D
     // True for an already-dug cell an ant can be sent to walk to without digging.
     public bool IsTunnel(Vector2I cell)
     {
-        return IsInBounds(cell) && GetTile(cell) == TileType.Tunnel;
+        return IsInBounds(cell) && IsWalkable(GetTile(cell));
     }
 
     // Fired whenever a cell actually transitions to Tunnel, regardless of what caused the dig.
@@ -182,11 +194,120 @@ public partial class GridManager : Node2D
 
         if (previous == TileType.FoodDeposit)
         {
-            ColonyManager?.AddFood(FoodPerDeposit);
-            GD.Print($"Harvested a food deposit at {cell}! +{FoodPerDeposit} food.");
+            foodRemaining.Remove(cell);
+            GD.Print($"Tunneled through a food deposit at {cell}, destroying it. Forage it instead to collect its food.");
         }
 
         EmitSignal(SignalName.CellDug, cell);
+    }
+
+    public bool IsFoodSource(Vector2I cell)
+    {
+        if (!IsInBounds(cell))
+        {
+            return false;
+        }
+
+        TileType type = GetTile(cell);
+        return (type == TileType.FoodDeposit || type == TileType.Tree) && GetFoodAmount(cell) > 0;
+    }
+
+    public int GetFoodAmount(Vector2I cell)
+    {
+        return foodRemaining.TryGetValue(cell, out int amount) ? amount : 0;
+    }
+
+    public int Harvest(Vector2I cell, int amount)
+    {
+        if (!IsFoodSource(cell))
+        {
+            return 0;
+        }
+
+        int available = GetFoodAmount(cell);
+        int harvested = Mathf.Min(amount, available);
+        int remaining = available - harvested;
+
+        if (remaining <= 0)
+        {
+            foodRemaining.Remove(cell);
+            TileType depletedTo = GetTile(cell) == TileType.Tree ? TileType.Grass : TileType.Tunnel;
+            SetTile(cell, depletedTo);
+        }
+        else
+        {
+            foodRemaining[cell] = remaining;
+        }
+
+        return harvested;
+    }
+
+    public bool BuildFoodStorage(Vector2I cell)
+    {
+        if (!IsInBounds(cell) || GetTile(cell) != TileType.Tunnel)
+        {
+            return false;
+        }
+
+        SetTile(cell, TileType.FoodStorage);
+        ColonyManager?.IncreaseFoodCapacity(FoodStorageCapacityBonus);
+        GD.Print($"Built a food storage room at {cell}! +{FoodStorageCapacityBonus} food capacity.");
+
+        return true;
+    }
+
+    public bool BuildNestChamber(Vector2I cell)
+    {
+        if (!IsInBounds(cell) || GetTile(cell) != TileType.Tunnel)
+        {
+            return false;
+        }
+
+        SetTile(cell, TileType.NestChamber);
+        ColonyManager?.IncreaseCapacity(NestChamberCapacityBonus);
+        GD.Print($"Built a nest chamber at {cell}! +{NestChamberCapacityBonus} population capacity.");
+
+        return true;
+    }
+
+    public Vector2I GetNearestStorageCell(Vector2I from)
+    {
+        const int MaxVisited = 4000;
+
+        if (GetTile(from) == TileType.FoodStorage)
+        {
+            return from;
+        }
+
+        var visited = new HashSet<Vector2I> { from };
+        var frontier = new Queue<Vector2I>();
+        frontier.Enqueue(from);
+
+        while (frontier.Count > 0 && visited.Count < MaxVisited)
+        {
+            Vector2I current = frontier.Dequeue();
+
+            foreach (Vector2I direction in Directions)
+            {
+                Vector2I next = current + direction;
+
+                if (visited.Contains(next) || !IsInBounds(next) || !IsWalkable(GetTile(next)))
+                {
+                    continue;
+                }
+
+                visited.Add(next);
+
+                if (GetTile(next) == TileType.FoodStorage)
+                {
+                    return next;
+                }
+
+                frontier.Enqueue(next);
+            }
+        }
+
+        return NestCenterCell;
     }
 
     // The next cell to step into when walking a straight line from `from` toward `to`.
@@ -209,7 +330,7 @@ public partial class GridManager : Node2D
     {
         const int MaxVisited = 4000;
 
-        if (GetTile(from) == TileType.Tunnel)
+        if (IsWalkable(GetTile(from)))
         {
             return from;
         }
@@ -233,7 +354,7 @@ public partial class GridManager : Node2D
 
                 visited.Add(next);
 
-                if (GetTile(next) == TileType.Tunnel)
+                if (IsWalkable(GetTile(next)))
                 {
                     return next;
                 }
@@ -267,7 +388,7 @@ public partial class GridManager : Node2D
             {
                 Vector2I next = current + direction;
 
-                if (visited.Contains(next) || !IsInBounds(next) || GetTile(next) != TileType.Tunnel)
+                if (visited.Contains(next) || !IsInBounds(next) || !IsWalkable(GetTile(next)))
                 {
                     continue;
                 }
@@ -315,7 +436,7 @@ public partial class GridManager : Node2D
         rockNoise = new FastNoiseLite { Seed = actualSeed, Frequency = RockNoiseFrequency };
         foodNoise = new FastNoiseLite { Seed = actualSeed + 1, Frequency = FoodNoiseFrequency };
         waterNoise = new FastNoiseLite { Seed = actualSeed + 2, Frequency = WaterNoiseFrequency };
-        treeNoise = new FastNoiseLite { Seed = actualSeed + 3, Frequency = TreeNoiseFrequency };
+        treeSalt = actualSeed + 3;
     }
 
     // Generates and caches the chunk containing `cell` if it hasn't been generated yet.
@@ -370,7 +491,7 @@ public partial class GridManager : Node2D
             {
                 type = TileType.Water;
             }
-            else if (NormalizedNoise(treeNoise, x, y) < TreeChance)
+            else if (RollChance(x, y, treeSalt) < TreeChance)
             {
                 type = TileType.Tree;
             }
@@ -397,13 +518,27 @@ public partial class GridManager : Node2D
             }
         }
 
+        if (type == TileType.FoodDeposit)
+        {
+            foodRemaining[cell] = FoodPerDeposit;
+        }
+        else if (type == TileType.Tree)
+        {
+            foodRemaining[cell] = FoodPerTree;
+        }
+
         SetTile(cell, type);
     }
 
-    // Maps a noise value from roughly [-1, 1] to [0, 1].
-    private static float NormalizedNoise(FastNoiseLite noise, int x, int y)
+    private static float RollChance(int x, int y, int salt)
     {
-        return (noise.GetNoise2D(x, y) + 1f) / 2f;
+        unchecked
+        {
+            uint h = (uint)(x * 374761393 + y * 668265263 + salt * 2147483647);
+            h = (h ^ (h >> 13)) * 1274126177u;
+            h ^= h >> 16;
+            return (h % 1_000_000u) / 1_000_000f;
+        }
     }
 
     private TileType GetTile(Vector2I cell)
@@ -429,6 +564,11 @@ public partial class GridManager : Node2D
         return type == TileType.Dirt || type == TileType.FoodDeposit;
     }
 
+    private static bool IsWalkable(TileType type)
+    {
+        return type == TileType.Tunnel || type == TileType.FoodStorage || type == TileType.NestChamber || type == TileType.Grass;
+    }
+
     private void CreateStartingNest()
     {
         // Carve a small 5x5 room, clearing straight through any rock or deposits generation placed there.
@@ -446,7 +586,26 @@ public partial class GridManager : Node2D
             ForceDig(new Vector2I(NestCenterCell.X, y));
         }
 
+        ClearSurfaceEntrance();
+
         GD.Print("Starting nest created!");
+    }
+
+    private void ClearSurfaceEntrance()
+    {
+        int surfaceRow = SurfaceHeight - 1;
+
+        if (surfaceRow < 0)
+        {
+            return;
+        }
+
+        for (int x = NestCenterCell.X - 1; x <= NestCenterCell.X + 1; x++)
+        {
+            Vector2I cell = new Vector2I(x, surfaceRow);
+            foodRemaining.Remove(cell);
+            SetTile(cell, TileType.Grass);
+        }
     }
 
     // Used by world generation to guarantee the nest and its entrance shaft are always clear.

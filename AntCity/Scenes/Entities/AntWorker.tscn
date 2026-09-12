@@ -20,4 +20,6 @@ shape = SubResource("RectangleShape2D_1")
 
 [node name="WanderTimer" type="Timer" parent="."]
 
+[node name="ForageTimer" type="Timer" parent="."]
+
 [node name="BuildTimer" type="Timer" parent="."]
