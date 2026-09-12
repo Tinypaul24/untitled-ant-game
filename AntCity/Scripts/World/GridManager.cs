@@ -88,14 +88,13 @@ public partial class GridManager : Node2D
     // These are the coordinates from your tileset.
     private static readonly Dictionary<TileType, Vector2I> TileAtlasCoords = new()
     {
-        { TileType.Dirt, new Vector2I(0, 1) },
-        { TileType.Tunnel, new Vector2I(0, 0) },
-        { TileType.Rock, new Vector2I(8, 0) },
-        { TileType.FoodDeposit, new Vector2I(4, 1) },
-        { TileType.Grass, new Vector2I(0, 0) },
-        { TileType.Water, new Vector2I(4, 10) },
-        { TileType.Tree, new Vector2I(7, 6) },
-        { TileType.FoodStorage, new Vector2I(6, 5) },
+        { TileType.Dirt, new Vector2I(0, 0) },
+        { TileType.Tunnel, new Vector2I(1, 0) },
+        { TileType.Rock, new Vector2I(2, 0) },
+        { TileType.FoodDeposit, new Vector2I(3, 0) },
+        { TileType.Grass, new Vector2I(0, 1) },
+        { TileType.Water, new Vector2I(1, 1) },
+        { TileType.Tree, new Vector2I(2, 1) },
     };
 
     private readonly Dictionary<Vector2I, TileType> grid = new();

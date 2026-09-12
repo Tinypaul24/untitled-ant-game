@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://dwwnn0hfmh05t"
-path="res://.godot/imported/Red Ant Left.png-63dfeec3d4386eac1952e7c99e823176.ctex"
+uid="uid://dhnvkg7lfbjay"
+path="res://.godot/imported/Red Ant Right.svg-feb66ee337c7122e59c9b8da998a8075.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://AntCity/Textures/Red Ant Left.png"
-dest_files=["res://.godot/imported/Red Ant Left.png-63dfeec3d4386eac1952e7c99e823176.ctex"]
+source_file="res://AntCity/Textures/Red Ant Right.svg"
+dest_files=["res://.godot/imported/Red Ant Right.svg-feb66ee337c7122e59c9b8da998a8075.ctex"]
 
 [params]
 
@@ -38,3 +38,6 @@ process/hdr_as_srgb=false
 process/hdr_clamp_exposure=false
 process/size_limit=0
 detect_3d/compress_to=1
+svg/scale=1.0
+editor/scale_with_editor_scale=false
+editor/convert_colors_with_editor_theme=false
