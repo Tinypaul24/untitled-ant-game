@@ -44,8 +44,8 @@ public partial class ColonyUI : CanvasLayer
     private void UpdateUI()
     {
         colonyLabel.Text = $"🐜 Ants: {colonyManager.Ants}";
-        foodLabel.Text = $"🍖 Food: {colonyManager.Food}";
+        foodLabel.Text = $"🍖 Food: {colonyManager.Food}/{colonyManager.FoodCapacity}";
         EggLabel.Text = $"🥚 Eggs: {colonyManager.Egg}";
-        capacityLabel.Text = $"🏠 Capacity: {colonyManager.Capacity}";
+        capacityLabel.Text = $"🏠 Capacity: {colonyManager.PopulationUsed}/{colonyManager.Capacity}";
     }
 }

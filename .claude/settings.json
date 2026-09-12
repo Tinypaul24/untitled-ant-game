@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build *)",
+      "Bash(python3 -c \"import xml.dom.minidom as m; m.parse\\('AntCity/Textures/world_tileset.svg'\\)\")",
+      "Bash(PowerShell.exe -NoProfile -Command \"[xml]\\(Get-Content 'AntCity\\\\Textures\\\\world_tileset.svg' -Raw\\) | Out-Null; Write-Output 'XML OK'\")"
+    ]
+  }
+}
