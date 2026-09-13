@@ -5,6 +5,9 @@ public partial class BuildManager : Node2D
 {
     private const int MinFootprintDimension = 2;
 
+    // Burrows stay ant-scaled: a chamber wider or taller than this is a cavern, not a nest room.
+    private const int MaxFootprintDimension = 4;
+
     private static readonly PackedScene RoomScene = GD.Load<PackedScene>("res://AntCity/Scenes/Entities/Room.tscn");
 
     private static readonly Color ValidPreviewColor = new Color(0.4f, 1f, 0.4f, 0.35f);
@@ -254,7 +257,8 @@ public partial class BuildManager : Node2D
 
     private bool IsFootprintValid(Rect2I footprint)
     {
-        if (footprint.Size.X < MinFootprintDimension || footprint.Size.Y < MinFootprintDimension)
+        if (footprint.Size.X < MinFootprintDimension || footprint.Size.Y < MinFootprintDimension ||
+            footprint.Size.X > MaxFootprintDimension || footprint.Size.Y > MaxFootprintDimension)
         {
             return false;
         }

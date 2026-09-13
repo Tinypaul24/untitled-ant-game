@@ -3,7 +3,7 @@ using Godot;
 public partial class Queen : Node2D
 {
 	private static readonly PackedScene EggScene = GD.Load<PackedScene>("res://AntCity/Scenes/Entities/Egg.tscn");
-	private const float EggScatterRadius = 16f;
+	private const float EggScatterRadius = 7f;
 	private const int EggFoodCost = 2;
 
 	private ColonyManager colonyManager;

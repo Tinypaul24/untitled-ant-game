@@ -12,6 +12,8 @@
 [ext_resource type="Script" path="res://AntCity/Scripts/Buildings/BuildManager.cs" id="11_build"]
 [ext_resource type="Theme" path="res://AntCity/UI/GameTheme.tres" id="12_theme"]
 [ext_resource type="Script" path="res://AntCity/Scripts/MiniMap.cs" id="13_minimap"]
+[ext_resource type="Script" path="res://AntCity/Scripts/World/ParticleField.cs" id="14_grain"]
+[ext_resource type="Script" path="res://AntCity/Scripts/World/FloorOverlay.cs" id="15_floor"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_lswqd"]
 texture = ExtResource("3_r1jm0")
@@ -60,6 +62,14 @@ ColonyManager = NodePath("../ColonyManager")
 
 [node name="Ground" type="TileMapLayer" parent="." unique_id=883923214]
 tile_set = SubResource("TileSet_xkah1")
+
+[node name="FloorOverlay" type="Node2D" parent="." node_paths=PackedStringArray("Grid")]
+script = ExtResource("15_floor")
+Grid = NodePath("../GridManager")
+
+[node name="ParticleField" type="Node2D" parent="." node_paths=PackedStringArray("Grid")]
+script = ExtResource("14_grain")
+Grid = NodePath("../GridManager")
 
 [node name="Queen" parent="." unique_id=1790484239 instance=ExtResource("4_lswqd")]
 position = Vector2(320, 192)
