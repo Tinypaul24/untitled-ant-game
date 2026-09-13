@@ -125,18 +125,24 @@ public partial class BuildManager : Node2D
         room.Activate();
 
         BuildingDef def = BuildingDefs.All[room.Type];
-        float effect = def.EffectPerCell * room.CellCount;
+        int cellCount = room.CellCount;
+        float effect = def.EffectPerCell * cellCount;
 
         switch (room.Type)
         {
             case BuildingType.NestingChamber:
-                ColonyManager.IncreaseCapacity(Mathf.RoundToInt(effect));
+                int capacityGain = Mathf.RoundToInt(effect);
+                ColonyManager.IncreaseCapacity(capacityGain);
+                ColonyManager.RaiseAlert($"{def.Name} built! +{capacityGain} population capacity.");
                 break;
             case BuildingType.Granary:
-                ColonyManager.IncreaseFoodCapacity(Mathf.RoundToInt(effect));
+                int foodCapacityGain = Mathf.RoundToInt(effect);
+                ColonyManager.IncreaseFoodCapacity(foodCapacityGain);
+                ColonyManager.RaiseAlert($"{def.Name} built! +{foodCapacityGain} food capacity.");
                 break;
             case BuildingType.Nursery:
-                ColonyManager.AddNursery(room.CellCount);
+                ColonyManager.AddNursery(cellCount);
+                ColonyManager.RaiseAlert($"{def.Name} built! Hatching sped up.");
                 break;
         }
     }

@@ -13,7 +13,10 @@ public partial class GridManager : Node2D
         Water,
         Tree,
         FoodStorage,
-        NestChamber
+        NestChamber,
+        SeedCache,
+        MushroomPatch,
+        BerryBush
     }
 
     private const int ChunkSize = 16;
@@ -65,6 +68,27 @@ public partial class GridManager : Node2D
     [Export]
     public int FoodPerTree { get; set; } = 3;
 
+    // Rare, big payoff - roughly 1 in 60 underground tiles once past the rock-free layer.
+    [Export(PropertyHint.Range, "0,1,0.001")]
+    public float SeedCacheChance { get; set; } = 0.016f;
+
+    [Export]
+    public int FoodPerSeedCache { get; set; } = 20;
+
+    // Common, small payoff - the frequent little pickups.
+    [Export(PropertyHint.Range, "0,1,0.01")]
+    public float MushroomPatchChance { get; set; } = 0.06f;
+
+    [Export]
+    public int FoodPerMushroomPatch { get; set; } = 2;
+
+    // Surface alternative to trees.
+    [Export(PropertyHint.Range, "0,1,0.01")]
+    public float BerryBushChance { get; set; } = 0.05f;
+
+    [Export]
+    public int FoodPerBerryBush { get; set; } = 8;
+
     [Export]
     public int FoodStorageCapacityBonus { get; set; } = 20;
 
@@ -101,6 +125,9 @@ public partial class GridManager : Node2D
         { TileType.Tree, new Vector2I(2, 1) },
         { TileType.FoodStorage, new Vector2I(3, 1) },
         { TileType.NestChamber, new Vector2I(0, 2) },
+        { TileType.SeedCache, new Vector2I(1, 2) },
+        { TileType.MushroomPatch, new Vector2I(2, 2) },
+        { TileType.BerryBush, new Vector2I(3, 2) },
     };
 
     private readonly Dictionary<Vector2I, TileType> grid = new();
@@ -112,6 +139,9 @@ public partial class GridManager : Node2D
     private FastNoiseLite foodNoise;
     private FastNoiseLite waterNoise;
     private int treeSalt;
+    private int seedCacheSalt;
+    private int mushroomPatchSalt;
+    private int berryBushSalt;
 
     // World cell the starting nest is centered on. Useful for e.g. pointing the camera at the colony.
     public Vector2I NestCenterCell { get; private set; }
@@ -192,10 +222,10 @@ public partial class GridManager : Node2D
 
         SetTile(cell, TileType.Tunnel);
 
-        if (previous == TileType.FoodDeposit)
+        if (IsFoodTileType(previous))
         {
             foodRemaining.Remove(cell);
-            GD.Print($"Tunneled through a food deposit at {cell}, destroying it. Forage it instead to collect its food.");
+            GD.Print($"Tunneled through a food source at {cell}, destroying it. Forage it instead to collect its food.");
         }
 
         EmitSignal(SignalName.CellDug, cell);
@@ -209,12 +239,33 @@ public partial class GridManager : Node2D
         }
 
         TileType type = GetTile(cell);
-        return (type == TileType.FoodDeposit || type == TileType.Tree) && GetFoodAmount(cell) > 0;
+        return IsFoodTileType(type) && GetFoodAmount(cell) > 0;
     }
 
     public int GetFoodAmount(Vector2I cell)
     {
         return foodRemaining.TryGetValue(cell, out int amount) ? amount : 0;
+    }
+
+    // Snapshot of every cell currently tracked as a food source, for the minimap to plot.
+    public List<Vector2I> GetFoodSourceCells()
+    {
+        return new List<Vector2I>(foodRemaining.Keys);
+    }
+
+    private static bool IsFoodTileType(TileType type)
+    {
+        return type == TileType.FoodDeposit
+            || type == TileType.Tree
+            || type == TileType.SeedCache
+            || type == TileType.MushroomPatch
+            || type == TileType.BerryBush;
+    }
+
+    // Underground food sources revert to open tunnel once emptied; surface ones revert to grass.
+    private static bool IsUndergroundFoodTileType(TileType type)
+    {
+        return type == TileType.FoodDeposit || type == TileType.SeedCache || type == TileType.MushroomPatch;
     }
 
     public int Harvest(Vector2I cell, int amount)
@@ -231,7 +282,7 @@ public partial class GridManager : Node2D
         if (remaining <= 0)
         {
             foodRemaining.Remove(cell);
-            TileType depletedTo = GetTile(cell) == TileType.Tree ? TileType.Grass : TileType.Tunnel;
+            TileType depletedTo = IsUndergroundFoodTileType(GetTile(cell)) ? TileType.Tunnel : TileType.Grass;
             SetTile(cell, depletedTo);
         }
         else
@@ -437,6 +488,9 @@ public partial class GridManager : Node2D
         foodNoise = new FastNoiseLite { Seed = actualSeed + 1, Frequency = FoodNoiseFrequency };
         waterNoise = new FastNoiseLite { Seed = actualSeed + 2, Frequency = WaterNoiseFrequency };
         treeSalt = actualSeed + 3;
+        seedCacheSalt = actualSeed + 4;
+        mushroomPatchSalt = actualSeed + 5;
+        berryBushSalt = actualSeed + 6;
     }
 
     // Generates and caches the chunk containing `cell` if it hasn't been generated yet.
@@ -495,6 +549,10 @@ public partial class GridManager : Node2D
             {
                 type = TileType.Tree;
             }
+            else if (RollChance(x, y, berryBushSalt) < BerryBushChance)
+            {
+                type = TileType.BerryBush;
+            }
             else
             {
                 type = TileType.Grass;
@@ -502,7 +560,7 @@ public partial class GridManager : Node2D
         }
         else
         {
-            // Underground: mostly dirt, with rock pockets and food deposits woven through it.
+            // Underground: mostly dirt, with rock pockets and food sources of varying rarity woven through it.
             int depthBelowSurface = y - SurfaceHeight;
             if (depthBelowSurface >= RockFreeDepth && rockNoise.GetNoise2D(x, y) > RockThreshold)
             {
@@ -512,19 +570,37 @@ public partial class GridManager : Node2D
             {
                 type = TileType.FoodDeposit;
             }
+            else if (RollChance(x, y, seedCacheSalt) < SeedCacheChance)
+            {
+                type = TileType.SeedCache;
+            }
+            else if (RollChance(x, y, mushroomPatchSalt) < MushroomPatchChance)
+            {
+                type = TileType.MushroomPatch;
+            }
             else
             {
                 type = TileType.Dirt;
             }
         }
 
-        if (type == TileType.FoodDeposit)
+        switch (type)
         {
-            foodRemaining[cell] = FoodPerDeposit;
-        }
-        else if (type == TileType.Tree)
-        {
-            foodRemaining[cell] = FoodPerTree;
+            case TileType.FoodDeposit:
+                foodRemaining[cell] = FoodPerDeposit;
+                break;
+            case TileType.Tree:
+                foodRemaining[cell] = FoodPerTree;
+                break;
+            case TileType.SeedCache:
+                foodRemaining[cell] = FoodPerSeedCache;
+                break;
+            case TileType.MushroomPatch:
+                foodRemaining[cell] = FoodPerMushroomPatch;
+                break;
+            case TileType.BerryBush:
+                foodRemaining[cell] = FoodPerBerryBush;
+                break;
         }
 
         SetTile(cell, type);
@@ -561,7 +637,7 @@ public partial class GridManager : Node2D
 
     private bool IsDiggable(TileType type)
     {
-        return type == TileType.Dirt || type == TileType.FoodDeposit;
+        return type == TileType.Dirt || IsUndergroundFoodTileType(type);
     }
 
     private static bool IsWalkable(TileType type)
