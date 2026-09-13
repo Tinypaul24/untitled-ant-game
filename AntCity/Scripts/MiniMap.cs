@@ -17,7 +17,7 @@ public partial class MiniMap : Control
 
     public override void _Ready()
     {
-        camera = GetNode<Camera2D>("/root/Main/Camera2D");
+        camera = GetNode<Camera2D>("../../../../Camera2D");
     }
 
     public override void _Process(double delta)

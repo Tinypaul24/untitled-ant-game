@@ -12,8 +12,6 @@ public partial class GridManager : Node2D
         Grass,
         Water,
         Tree,
-        FoodStorage,
-        NestChamber,
         SeedCache,
         MushroomPatch,
         BerryBush,
@@ -95,12 +93,6 @@ public partial class GridManager : Node2D
     [Export]
     public int FoodPerBerryBush { get; set; } = 8;
 
-    [Export]
-    public int FoodStorageCapacityBonus { get; set; } = 20;
-
-    [Export]
-    public int NestChamberCapacityBonus { get; set; } = 5;
-
     [Export(PropertyHint.Range, "0,1,0.01")]
     public float WaterNoiseFrequency { get; set; } = 0.1f;
 
@@ -110,26 +102,6 @@ public partial class GridManager : Node2D
     // Roughly the fraction of surface tiles (that aren't water) that end up as trees.
     [Export(PropertyHint.Range, "0,1,0.01")]
     public float TreeChance { get; set; } = 0.12f;
-
-    private static readonly Vector2I[] Directions =
-    {
-        new Vector2I(0, -1), // Up
-        new Vector2I(0, 1),  // Down
-        new Vector2I(-1, 0), // Left
-        new Vector2I(1, 0)   // Right
-    };
-
-    // Ants walk; they do not climb. Elevation only changes on a diagonal, which makes every route
-    // up or down a ramp that has to be dug as one.
-    private static readonly Vector2I[] MoveDirections =
-    {
-        new Vector2I(-1, 0),  // Left
-        new Vector2I(1, 0),   // Right
-        new Vector2I(-1, -1), // Ramp up-left
-        new Vector2I(1, -1),  // Ramp up-right
-        new Vector2I(-1, 1),  // Ramp down-left
-        new Vector2I(1, 1)    // Ramp down-right
-    };
 
     // These are the coordinates from your tileset.
     private static readonly Dictionary<TileType, Vector2I> TileAtlasCoords = new()
@@ -141,8 +113,6 @@ public partial class GridManager : Node2D
         { TileType.Grass, new Vector2I(0, 1) },
         { TileType.Water, new Vector2I(1, 1) },
         { TileType.Tree, new Vector2I(2, 1) },
-        { TileType.FoodStorage, new Vector2I(3, 1) },
-        { TileType.NestChamber, new Vector2I(0, 2) },
         { TileType.SeedCache, new Vector2I(1, 2) },
         { TileType.MushroomPatch, new Vector2I(2, 2) },
         { TileType.BerryBush, new Vector2I(3, 2) },
@@ -227,56 +197,9 @@ public partial class GridManager : Node2D
         return IsInBounds(cell) && IsWalkable(GetTile(cell));
     }
 
-    // An ant can only occupy an open cell that has solid ground directly beneath it. Open space with
-    // nothing under it is a drop, not a floor - that is what forces tunnels to be dug as ramps.
-    public bool IsStandable(Vector2I cell)
-    {
-        if (!IsInBounds(cell) || !IsWalkable(GetTile(cell)))
-        {
-            return false;
-        }
-
-        return !IsWalkable(GetTile(cell + new Vector2I(0, 1)));
-    }
-
     // Fired when terrain changes at runtime, so overlays know to redraw.
     [Signal]
     public delegate void TerrainChangedEventHandler();
-
-    // Standability limited to cells that already exist, so simply looking at the world cannot force
-    // new chunks into being generated.
-    public bool IsKnownStandable(Vector2I cell)
-    {
-        if (!IsInBounds(cell) || !grid.TryGetValue(cell, out TileType tile) || !IsWalkable(tile))
-        {
-            return false;
-        }
-
-        return grid.TryGetValue(cell + new Vector2I(0, 1), out TileType below) && !IsWalkable(below);
-    }
-
-    // First cell with a floor at or below this one, for an ant left standing over open air.
-    public Vector2I FindFloorBelow(Vector2I cell)
-    {
-        const int MaxDrop = 64;
-
-        for (int depth = 0; depth < MaxDrop; depth++)
-        {
-            Vector2I candidate = cell + new Vector2I(0, depth);
-
-            if (IsStandable(candidate))
-            {
-                return candidate;
-            }
-
-            if (!IsInBounds(candidate) || !IsWalkable(GetTile(candidate)))
-            {
-                break;
-            }
-        }
-
-        return cell;
-    }
 
     // Fired whenever a cell actually transitions to Tunnel, regardless of what caused the dig.
     [Signal]
@@ -336,8 +259,6 @@ public partial class GridManager : Node2D
         return grainsRemoved.TryGetValue(cell, out int removed) ? removed : 0;
     }
 
-    // Cells part-way through excavation, for the crumble overlay to draw.
-    public IReadOnlyDictionary<Vector2I, int> PartiallyDugCells => grainsRemoved;
 
     public bool IsFoodSource(Vector2I cell)
     {
@@ -425,374 +346,6 @@ public partial class GridManager : Node2D
         }
 
         return harvested;
-    }
-
-    public bool BuildFoodStorage(Vector2I cell)
-    {
-        if (!IsInBounds(cell) || GetTile(cell) != TileType.Tunnel)
-        {
-            return false;
-        }
-
-        SetTile(cell, TileType.FoodStorage);
-        ColonyManager?.IncreaseFoodCapacity(FoodStorageCapacityBonus);
-        GD.Print($"Built a food storage room at {cell}! +{FoodStorageCapacityBonus} food capacity.");
-
-        return true;
-    }
-
-    public bool BuildNestChamber(Vector2I cell)
-    {
-        if (!IsInBounds(cell) || GetTile(cell) != TileType.Tunnel)
-        {
-            return false;
-        }
-
-        SetTile(cell, TileType.NestChamber);
-        ColonyManager?.IncreaseCapacity(NestChamberCapacityBonus);
-        GD.Print($"Built a nest chamber at {cell}! +{NestChamberCapacityBonus} population capacity.");
-
-        return true;
-    }
-
-    public Vector2I GetNearestStorageCell(Vector2I from)
-    {
-        const int MaxVisited = 4000;
-
-        if (GetTile(from) == TileType.FoodStorage)
-        {
-            return from;
-        }
-
-        var visited = new HashSet<Vector2I> { from };
-        var frontier = new Queue<Vector2I>();
-        frontier.Enqueue(from);
-
-        while (frontier.Count > 0 && visited.Count < MaxVisited)
-        {
-            Vector2I current = frontier.Dequeue();
-
-            foreach (Vector2I direction in MoveDirections)
-            {
-                Vector2I next = current + direction;
-
-                if (visited.Contains(next) || !IsStandable(next))
-                {
-                    continue;
-                }
-
-                visited.Add(next);
-
-                if (GetTile(next) == TileType.FoodStorage)
-                {
-                    return next;
-                }
-
-                frontier.Enqueue(next);
-            }
-        }
-
-        return NestCenterCell;
-    }
-
-    // The next cell to carve when tunnelling from `from` toward `to`.
-    //
-    // Height is only ever gained or lost diagonally, so a corridor that has to descend comes out as a
-    // staircase an ant can walk rather than a shaft nothing can climb. The router also avoids cutting
-    // the floor out from under a cell it already opened, which would strand anything standing there.
-    public Vector2I GetStepToward(Vector2I from, Vector2I to)
-    {
-        const float UnderminePenalty = 10000f;
-        const float UnsupportedPenalty = 5000f;
-
-        // Within reach, break straight in - unless the target is directly above or below, which would
-        // undercut the cell she is standing in and leave a one-way drop. Then sidestep first so the
-        // last move onto it is a diagonal she can also walk back up.
-        if (Mathf.Max(Mathf.Abs(to.X - from.X), Mathf.Abs(to.Y - from.Y)) <= 1)
-        {
-            return to.X != from.X ? to : SidestepFor(from, to);
-        }
-
-        Vector2I best = from;
-        float bestScore = float.MaxValue;
-
-        foreach (Vector2I direction in MoveDirections)
-        {
-            Vector2I candidate = from + direction;
-
-            if (!IsInBounds(candidate))
-            {
-                continue;
-            }
-
-            TileType tile = GetTile(candidate);
-
-            if (!IsWalkable(tile) && !IsDiggable(tile))
-            {
-                continue;
-            }
-
-            int offX = candidate.X - to.X;
-            int offY = candidate.Y - to.Y;
-            float score = offX * offX + offY * offY;
-
-            if (IsWalkable(GetTile(candidate + new Vector2I(0, -1))))
-            {
-                score += UnderminePenalty;
-            }
-
-            if (IsWalkable(GetTile(candidate + new Vector2I(0, 1))))
-            {
-                score += UnsupportedPenalty;
-            }
-
-            if (score < bestScore)
-            {
-                bestScore = score;
-                best = candidate;
-            }
-        }
-
-        // Boxed in on every side by rock: fall back to a plain step so the caller still makes progress.
-        if (best == from)
-        {
-            int stepX = Mathf.Sign(to.X - from.X);
-            best = from + new Vector2I(stepX == 0 ? 1 : stepX, Mathf.Sign(to.Y - from.Y));
-        }
-
-        return best;
-    }
-
-    // A step to one side, so a target sitting directly above or below can be reached on a diagonal.
-    private Vector2I SidestepFor(Vector2I from, Vector2I to)
-    {
-        Vector2I right = from + new Vector2I(1, 0);
-        Vector2I left = from + new Vector2I(-1, 0);
-
-        bool rightOpen = IsWalkable(GetTile(right)) || IsDiggable(GetTile(right));
-        bool leftOpen = IsWalkable(GetTile(left)) || IsDiggable(GetTile(left));
-
-        if (rightOpen && !leftOpen)
-        {
-            return right;
-        }
-
-        if (leftOpen && !rightOpen)
-        {
-            return left;
-        }
-
-        if (!rightOpen && !leftOpen)
-        {
-            // Solid rock either side - nothing to do but break straight in and accept the drop.
-            return to;
-        }
-
-        // Both usable: pick the side that keeps a floor under the cell she is leaving.
-        return IsWalkable(GetTile(right + new Vector2I(0, 1))) ? left : right;
-    }
-
-    // The closest cell an ant could actually stand in, expanding outward regardless of tile type.
-    // Bounded so a click far into unexplored territory can't trigger unbounded chunk generation.
-    public Vector2I FindNearestTunnelCell(Vector2I from)
-    {
-        const int MaxVisited = 4000;
-
-        if (IsStandable(from))
-        {
-            return from;
-        }
-
-        var visited = new HashSet<Vector2I> { from };
-        var frontier = new Queue<Vector2I>();
-        frontier.Enqueue(from);
-
-        while (frontier.Count > 0 && visited.Count < MaxVisited)
-        {
-            Vector2I current = frontier.Dequeue();
-
-            foreach (Vector2I direction in Directions)
-            {
-                Vector2I next = current + direction;
-
-                if (visited.Contains(next) || !IsInBounds(next))
-                {
-                    continue;
-                }
-
-                visited.Add(next);
-
-                if (IsStandable(next))
-                {
-                    return next;
-                }
-
-                frontier.Enqueue(next);
-            }
-        }
-
-        // No tunnel is reachable nearby.
-        return from;
-    }
-
-
-    // Plans a corridor from `start` toward `goal` that is still walkable once it has been carved.
-    //
-    // A greedy per-step router cannot do this: it makes locally sensible moves and then saws off its
-    // own approach when a switchback doubles back underneath itself. Planning the whole run up front
-    // lets three rules hold along the entire route - only horizontal and diagonal moves, every cell
-    // with solid ground under it, and no cell tucked directly beneath one the route already opened.
-    //
-    // Ends at the first cell from which `goal` is within reach, since an ant digs a cell by standing
-    // next to it, not by standing in it. Null if no walkable corridor exists.
-    public List<Vector2I> PlanDigRoute(Vector2I start, Vector2I goal)
-    {
-        const int MaxVisited = 6000;
-        const int AncestorsChecked = 4;
-
-        if (IsWithinReach(start, goal))
-        {
-            return new List<Vector2I> { start };
-        }
-
-        var cameFrom = new Dictionary<Vector2I, Vector2I>();
-        var visited = new HashSet<Vector2I> { start };
-        var frontier = new Queue<Vector2I>();
-        frontier.Enqueue(start);
-
-        while (frontier.Count > 0 && visited.Count < MaxVisited)
-        {
-            Vector2I current = frontier.Dequeue();
-
-            foreach (Vector2I direction in MoveDirections)
-            {
-                Vector2I next = current + direction;
-
-                if (visited.Contains(next) || !IsInBounds(next))
-                {
-                    continue;
-                }
-
-                TileType tile = GetTile(next);
-
-                if (!IsWalkable(tile) && !IsDiggable(tile))
-                {
-                    continue;
-                }
-
-                // Must not destroy a floor that something is already standing on up there.
-                if (IsStandable(next + new Vector2I(0, -1)))
-                {
-                    continue;
-                }
-
-                // Needs something solid to stand on once it has been carved out.
-                if (IsWalkable(GetTile(next + new Vector2I(0, 1))))
-                {
-                    continue;
-                }
-
-                if (UnderminesRoute(cameFrom, start, current, next, AncestorsChecked))
-                {
-                    continue;
-                }
-
-                visited.Add(next);
-                cameFrom[next] = current;
-
-                if (IsWithinReach(next, goal))
-                {
-                    return BuildPath(cameFrom, start, next);
-                }
-
-                frontier.Enqueue(next);
-            }
-        }
-
-        return null;
-    }
-
-    // True if carving `next` would pull the floor out from under a cell the route just opened.
-    private static bool UnderminesRoute(Dictionary<Vector2I, Vector2I> cameFrom, Vector2I start, Vector2I current, Vector2I next, int depth)
-    {
-        Vector2I above = next + new Vector2I(0, -1);
-        Vector2I node = current;
-
-        for (int i = 0; i < depth; i++)
-        {
-            if (node == above)
-            {
-                return true;
-            }
-
-            if (node == start || !cameFrom.TryGetValue(node, out node))
-            {
-                break;
-            }
-        }
-
-        return false;
-    }
-
-    public static bool IsWithinReach(Vector2I a, Vector2I b)
-    {
-        return Mathf.Max(Mathf.Abs(a.X - b.X), Mathf.Abs(a.Y - b.Y)) <= 1;
-    }
-
-    // Shortest walkable route from `start` to `goal` through already-dug tunnel cells, or null if unreachable.
-    public List<Vector2I> FindTunnelPath(Vector2I start, Vector2I goal)
-    {
-        if (start == goal)
-        {
-            return new List<Vector2I> { start };
-        }
-
-        var cameFrom = new Dictionary<Vector2I, Vector2I>();
-        var visited = new HashSet<Vector2I> { start };
-        var frontier = new Queue<Vector2I>();
-        frontier.Enqueue(start);
-
-        while (frontier.Count > 0)
-        {
-            Vector2I current = frontier.Dequeue();
-
-            foreach (Vector2I direction in MoveDirections)
-            {
-                Vector2I next = current + direction;
-
-                if (visited.Contains(next) || !IsStandable(next))
-                {
-                    continue;
-                }
-
-                visited.Add(next);
-                cameFrom[next] = current;
-
-                if (next == goal)
-                {
-                    return BuildPath(cameFrom, start, goal);
-                }
-
-                frontier.Enqueue(next);
-            }
-        }
-
-        return null;
-    }
-
-    private static List<Vector2I> BuildPath(Dictionary<Vector2I, Vector2I> cameFrom, Vector2I start, Vector2I goal)
-    {
-        List<Vector2I> path = new List<Vector2I> { goal };
-        Vector2I current = goal;
-
-        while (current != start)
-        {
-            current = cameFrom[current];
-            path.Add(current);
-        }
-
-        path.Reverse();
-        return path;
     }
 
     private void InitializeNoise()
@@ -977,8 +530,6 @@ public partial class GridManager : Node2D
     private static bool IsWalkable(TileType type)
     {
         return type == TileType.Tunnel
-            || type == TileType.FoodStorage
-            || type == TileType.NestChamber
             || type == TileType.Grass
             || type == TileType.Air;
     }

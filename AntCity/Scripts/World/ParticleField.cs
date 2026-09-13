@@ -40,6 +40,9 @@ public partial class ParticleField : Node2D
     private readonly Dictionary<Vector2I, int> settledPerCell = new();
     private readonly List<Grain> falling = new();
 
+    public int SettledGrainCount => settled.Count;
+    public int FallingGrainCount => falling.Count;
+
     // Every slot held by a grain, settled or in flight. Keeps two falling grains from claiming the
     // same slot and quietly annihilating one another when they land.
     private readonly HashSet<Vector2I> occupied = new();
@@ -59,7 +62,7 @@ public partial class ParticleField : Node2D
         for (int step = 0; step < MaxStepsPerFrame && tickAccumulator >= TickSeconds; step++)
         {
             tickAccumulator -= TickSeconds;
-            Step();
+            Advance();
         }
 
         // Settled grains are static, so the canvas only gets rebuilt when something actually moved.
@@ -173,7 +176,8 @@ public partial class ParticleField : Node2D
         }
     }
 
-    private void Step()
+    // One tick of the sand simulation. Driven by _Process in play, and directly by the terrain tests.
+    public void Advance()
     {
         if (falling.Count == 0)
         {

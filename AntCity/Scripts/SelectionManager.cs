@@ -21,7 +21,7 @@ public partial class SelectionManager : Node2D
 
     public override void _Ready()
     {
-        gridManager = GetNode<GridManager>("/root/Main/GridManager");
+        gridManager = GetNode<GridManager>("../GridManager");
 
         // Area2D.InputEvent (used to click-select ants) only fires once this is on.
         GetViewport().PhysicsObjectPicking = true;

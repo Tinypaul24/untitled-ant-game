@@ -13,7 +13,7 @@ public partial class Larva : Node2D
 
     public override void _Ready()
     {
-        colonyManager = GetNode<ColonyManager>("/root/Main/ColonyManager");
+        colonyManager = GetNode<ColonyManager>("../ColonyManager");
         colonyManager.AddLarva();
 
         matureTimer = GetNode<Timer>("MatureTimer");

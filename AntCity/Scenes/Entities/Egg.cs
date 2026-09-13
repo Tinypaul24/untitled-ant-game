@@ -11,7 +11,7 @@ public partial class Egg : Node2D
 
     public override void _Ready()
     {
-        colonyManager = GetNode<ColonyManager>("/root/Main/ColonyManager");
+        colonyManager = GetNode<ColonyManager>("../ColonyManager");
 
         Timer hatchTimer = GetNode<Timer>("HatchTimer");
         hatchTimer.OneShot = true;
