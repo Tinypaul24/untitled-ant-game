@@ -69,10 +69,10 @@ public partial class ColonyUI : CanvasLayer
         toastPanel = GetNode<PanelContainer>("ThemeRoot/ToastPanel");
         toastLabel = GetNode<Label>("ThemeRoot/ToastPanel/ToastLabel");
 
-        colonyManager = GetNode<ColonyManager>("/root/Main/ColonyManager");
-        queen = GetNode<Queen>("/root/Main/Queen");
-        gameClock = GetNode<GameClock>("/root/Main/GameClock");
-        buildManager = GetNode<BuildManager>("/root/Main/BuildManager");
+        colonyManager = GetNode<ColonyManager>("../ColonyManager");
+        queen = GetNode<Queen>("../Queen");
+        gameClock = GetNode<GameClock>("../GameClock");
+        buildManager = GetNode<BuildManager>("../BuildManager");
 
         // Listen for colony changes and noteworthy events.
         colonyManager.ColonyChanged += UpdateUI;

@@ -26,7 +26,7 @@ public partial class FloorOverlay : Node2D
 
     public override void _Ready()
     {
-        camera = GetNode<Camera2D>("/root/Main/Camera2D");
+        camera = GetNode<Camera2D>("../Camera2D");
         Grid.TerrainChanged += () => terrainDirty = true;
     }
 

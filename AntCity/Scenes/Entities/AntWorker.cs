@@ -76,11 +76,11 @@ public partial class AntWorker : Area2D
         forageTimer = GetNode<Timer>("ForageTimer");
         buildTimer = GetNode<Timer>("BuildTimer");
 
-        gridManager = GetNode<GridManager>("/root/Main/GridManager");
-        selectionManager = GetNode<SelectionManager>("/root/Main/SelectionManager");
-        buildManager = GetNode<BuildManager>("/root/Main/BuildManager");
-        colonyManager = GetNode<ColonyManager>("/root/Main/ColonyManager");
-        particleField = GetNode<ParticleField>("/root/Main/ParticleField");
+        gridManager = GetNode<GridManager>("../GridManager");
+        selectionManager = GetNode<SelectionManager>("../SelectionManager");
+        buildManager = GetNode<BuildManager>("../BuildManager");
+        colonyManager = GetNode<ColonyManager>("../ColonyManager");
+        particleField = GetNode<ParticleField>("../ParticleField");
 
         digTimer.OneShot = true;
         digTimer.WaitTime = DigSecondsPerGrain;
@@ -383,9 +383,10 @@ public partial class AntWorker : Area2D
 
     private void DigTowardTarget()
     {
-        Vector2I current = gridManager.WorldToCell(Position);
-
-        if (current == digTarget)
+        // The job is done once the cell is open, not once she is standing in it. Plenty of dig
+        // targets - the upper cells of a chamber, anything overhead - are places no ant can stand,
+        // and waiting to occupy one is how a digger used to strand herself breaking in from above.
+        if (!gridManager.CanDig(digTarget))
         {
             claimedJobCell = null;
 
@@ -405,6 +406,8 @@ public partial class AntWorker : Area2D
 
             return;
         }
+
+        Vector2I current = gridManager.WorldToCell(Position);
 
         // Follow the planned corridor one cell at a time. Planning the whole run up front is what
         // keeps a descending tunnel walkable - stepping greedily saws off its own way back out.
@@ -476,13 +479,20 @@ public partial class AntWorker : Area2D
         ScoopUpLooseGrains(dugCell);
 
         // A full load gets hauled out immediately, mid-corridor, rather than waiting for the whole dig job to finish.
-        if (carriedGrains.Count >= HaulCapacityGrains)
+        Action next = carriedGrains.Count >= HaulCapacityGrains
+            ? () => HaulGrainsThen(ResumeDigJob)
+            : callback;
+
+        // She only moves into what she just opened if there is a floor in there. Stepping into open
+        // air is how a digger breaking through from above used to drop somewhere she could not climb
+        // back out of.
+        if (gridManager.IsStandable(dugCell))
         {
-            FollowPath(new List<Vector2I> { dugCell }, () => HaulGrainsThen(ResumeDigJob));
+            FollowPath(new List<Vector2I> { dugCell }, next);
             return;
         }
 
-        FollowPath(new List<Vector2I> { dugCell }, callback);
+        next?.Invoke();
     }
 
     private void ScoopUpLooseGrains(Vector2I cell)
@@ -609,7 +619,8 @@ public partial class AntWorker : Area2D
         }
 
         Vector2I current = gridManager.WorldToCell(Position);
-        Vector2I storageCell = gridManager.GetNearestStorageCell(current);
+        // Food is deposited at the nest itself; there are no separate storage cells.
+        Vector2I storageCell = gridManager.NestCenterCell;
         List<Vector2I> route = gridManager.FindTunnelPath(current, storageCell) ?? new List<Vector2I> { current };
 
         FollowPath(route, DepositFood);
