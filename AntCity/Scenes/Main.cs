@@ -3,7 +3,6 @@ using Godot;
 public partial class Main : Node2D
 {
     private const int StartingAntWorkers = 3;
-    private const float StartingAntScatterRadius = 16f;
 
     private static readonly PackedScene AntWorkerScene = GD.Load<PackedScene>("res://AntCity/Scenes/Entities/AntWorker.tscn");
 
@@ -21,6 +20,8 @@ public partial class Main : Node2D
         camera.MakeCurrent();
         queen.Position = nestWorldPosition;
 
+        // Spread the starting workers along the chamber floor. Ants cannot climb, so they have to
+        // begin somewhere they can actually stand.
         for (int i = 0; i < StartingAntWorkers; i++)
         {
             if (!colonyManager.AddAnt())
@@ -28,13 +29,10 @@ public partial class Main : Node2D
                 break;
             }
 
-            Vector2 offset = new Vector2(
-                (GD.Randf() * 2f - 1f) * StartingAntScatterRadius,
-                (GD.Randf() * 2f - 1f) * StartingAntScatterRadius
-            );
+            Vector2I spawnCell = gridManager.FindNearestTunnelCell(gridManager.NestCenterCell + new Vector2I(i - 1, 0));
 
             Node2D ant = AntWorkerScene.Instantiate<Node2D>();
-            ant.Position = nestWorldPosition + offset;
+            ant.Position = gridManager.CellToWorld(spawnCell);
             AddChild(ant);
         }
     }

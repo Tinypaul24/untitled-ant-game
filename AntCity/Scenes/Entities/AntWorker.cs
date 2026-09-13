@@ -15,7 +15,9 @@ public partial class AntWorker : Area2D
 
     private const float MoveSpeed = 24f;
     private const float ArrivalDistance = 2f;
+    // Seconds to excavate one whole cell, split evenly across the grains it is made of.
     private const float DigSeconds = 2f;
+    private const float DigSecondsPerGrain = DigSeconds / GridManager.GrainsPerCell;
     private const int WanderCellRadius = 3;
     private const double MinWanderPause = 1.0;
     private const double MaxWanderPause = 3.0;
@@ -23,8 +25,12 @@ public partial class AntWorker : Area2D
     private const float ForageSeconds = 1f;
     private const int ForageCarryCapacity = 5;
     private const int HarvestPerTick = 1;
-    private const int SpoilPerCell = 2;
-    private const int SpoilCarryCapacity = 6;
+    // Each dig tick scrapes out a share of the cell; a full load is three cells worth, matching the old haul cadence.
+    private const int GrainsPerDigTick = ParticleField.SlotsPerCell / GridManager.GrainsPerCell;
+    private const int HaulCapacityGrains = ParticleField.SlotsPerCell * 3;
+    private const int MaxCarriedSpecksDrawn = 10;
+    private const int CarriedSpecksPerRow = 4;
+    private const float CarriedSpeckSize = 2f;
 
     private static readonly Color SelectionRingColor = new Color(1f, 1f, 0.4f);
 
@@ -42,6 +48,7 @@ public partial class AntWorker : Area2D
     private SelectionManager selectionManager;
     private BuildManager buildManager;
     private ColonyManager colonyManager;
+    private ParticleField particleField;
 
     private State state = State.Idle;
     private bool isSelected;
@@ -54,9 +61,10 @@ public partial class AntWorker : Area2D
     private Action pendingDigCallback;
     private Vector2I? forageTarget;
     private int carriedFood;
-    private int carriedDirt;
+    private readonly List<GridManager.TileType> carriedGrains = new();
     private Room pendingRoom;
     private Vector2I? claimedJobCell;
+    private Queue<Vector2I> plannedDigRoute = new Queue<Vector2I>();
 
     public override void _Ready()
     {
@@ -72,9 +80,10 @@ public partial class AntWorker : Area2D
         selectionManager = GetNode<SelectionManager>("/root/Main/SelectionManager");
         buildManager = GetNode<BuildManager>("/root/Main/BuildManager");
         colonyManager = GetNode<ColonyManager>("/root/Main/ColonyManager");
+        particleField = GetNode<ParticleField>("/root/Main/ParticleField");
 
         digTimer.OneShot = true;
-        digTimer.WaitTime = DigSeconds;
+        digTimer.WaitTime = DigSecondsPerGrain;
         digTimer.Timeout += OnDigTimeout;
 
         forageTimer.OneShot = true;
@@ -169,13 +178,46 @@ public partial class AntWorker : Area2D
 
     public override void _Draw()
     {
-        if (!isSelected)
+        DrawCarriedGrains();
+
+        if (isSelected)
+        {
+            DrawArc(Vector2.Zero, SelectionRingRadius, 0f, Mathf.Tau, 24, SelectionRingColor, 2f, true);
+        }
+    }
+
+    // The load she is actually carrying, heaped on her back. Without this a haul reads as the dirt
+    // vanishing at the dig face and reappearing on the pile.
+    private void DrawCarriedGrains()
+    {
+        if (carriedGrains.Count == 0)
         {
             return;
         }
 
-        DrawArc(Vector2.Zero, SelectionRingRadius, 0f, Mathf.Tau, 24, SelectionRingColor, 2f, true);
+        int specks = Mathf.Clamp(
+            Mathf.RoundToInt(MaxCarriedSpecksDrawn * carriedGrains.Count / (float)HaulCapacityGrains),
+            1,
+            MaxCarriedSpecksDrawn
+        );
+
+        for (int i = 0; i < specks; i++)
+        {
+            int row = i / CarriedSpecksPerRow;
+            int column = i % CarriedSpecksPerRow;
+
+            Vector2 offset = new Vector2(
+                (column - (CarriedSpecksPerRow - 1) / 2f) * CarriedSpeckSize + row * CarriedSpeckSize / 2f,
+                -SelectionRingRadius - CarriedSpeckSize - row * CarriedSpeckSize
+            );
+
+            // Sample across the load so a mixed haul shows the materials it is actually made of.
+            Color color = ParticleField.ColorFor(carriedGrains[i * carriedGrains.Count / specks]);
+
+            DrawRect(new Rect2(offset, new Vector2(CarriedSpeckSize, CarriedSpeckSize)), color, filled: true);
+        }
     }
+
 
     private void IssueDigCommand(Vector2I targetCell, Vector2I wallReferenceCell)
     {
@@ -183,6 +225,7 @@ public partial class AntWorker : Area2D
         StopCurrentTask();
 
         digTarget = targetCell;
+        plannedDigRoute.Clear();
 
         Vector2I startCell = gridManager.WorldToCell(Position);
         Vector2I wallCell = gridManager.FindNearestTunnelCell(wallReferenceCell);
@@ -213,8 +256,9 @@ public partial class AntWorker : Area2D
             carriedFood = 0;
         }
 
-        // Unlike food, an interrupted haul just loses the dirt - it's not worth tracking a dropped pile mid-tunnel.
-        carriedDirt = 0;
+        // An interrupted haul tips its load out where it stands rather than deleting it - the
+        // material came out of the ground, so it has to end up somewhere.
+        DropCarriedGrains();
 
         forageTarget = null;
     }
@@ -238,6 +282,12 @@ public partial class AntWorker : Area2D
     // Look for open job-board work before falling back to aimless wandering.
     private void GoIdle()
     {
+        // Spoil can pile up deep enough to set solid around her; dig back out before anything else.
+        if (TryDigOut() || TryFall())
+        {
+            return;
+        }
+
         if (buildManager.TryClaimDigJob(Position, out Vector2I cell))
         {
             claimedJobCell = cell;
@@ -252,6 +302,46 @@ public partial class AntWorker : Area2D
         }
 
         PickWanderTarget();
+    }
+
+    // Buried by settling spoil. Chip the cell she is standing in back open before taking any job.
+    private bool TryDigOut()
+    {
+        Vector2I current = gridManager.WorldToCell(Position);
+
+        if (gridManager.IsTunnel(current) || !gridManager.CanDig(current))
+        {
+            return false;
+        }
+
+        pendingDigCell = current;
+        pendingDigCallback = GoIdle;
+        state = State.Digging;
+        digTimer.Start();
+
+        return true;
+    }
+
+    // Standing over open air with nothing underfoot - drop to the floor before doing anything else.
+    private bool TryFall()
+    {
+        Vector2I current = gridManager.WorldToCell(Position);
+
+        if (!gridManager.IsTunnel(current) || gridManager.IsStandable(current))
+        {
+            return false;
+        }
+
+        Vector2I floor = gridManager.FindFloorBelow(current);
+
+        if (floor == current)
+        {
+            return false;
+        }
+
+        FollowPath(new List<Vector2I> { floor }, GoIdle);
+
+        return true;
     }
 
     // Walk to a room's stand cell (already fully dug) and work its furnish timer.
@@ -299,9 +389,9 @@ public partial class AntWorker : Area2D
         {
             claimedJobCell = null;
 
-            if (carriedDirt > 0)
+            if (carriedGrains.Count > 0)
             {
-                HaulDirtThen(() =>
+                HaulGrainsThen(() =>
                 {
                     wanderHome = Position;
                     GoIdle();
@@ -316,38 +406,121 @@ public partial class AntWorker : Area2D
             return;
         }
 
-        StepOrDig(digTarget, DigTowardTarget);
+        // Follow the planned corridor one cell at a time. Planning the whole run up front is what
+        // keeps a descending tunnel walkable - stepping greedily saws off its own way back out.
+        if (plannedDigRoute.Count == 0)
+        {
+            List<Vector2I> plan = gridManager.PlanDigRoute(current, digTarget);
+
+            if (plan == null)
+            {
+                // Nothing diggable reaches it without stranding her. Drop the job and try again later.
+                AbandonCurrentJob();
+                state = State.Idle;
+                WaitThenWander();
+
+                return;
+            }
+
+            plannedDigRoute = new Queue<Vector2I>(plan);
+        }
+
+        while (plannedDigRoute.Count > 0 && plannedDigRoute.Peek() == current)
+        {
+            plannedDigRoute.Dequeue();
+        }
+
+        StepOrDig(plannedDigRoute.Count > 0 ? plannedDigRoute.Dequeue() : digTarget, DigTowardTarget);
     }
 
     private void OnDigTimeout()
     {
-        gridManager.Dig(pendingDigCell);
-        carriedDirt += SpoilPerCell;
+        // Read the material before the cell can flip to open tunnel on the final tick.
+        GridManager.TileType material = gridManager.GetTileAt(pendingDigCell);
+        Vector2I standingCell = gridManager.WorldToCell(Position);
+
+        bool cellOpened = gridManager.DigGrain(pendingDigCell);
+
+        // The scraped-out material tumbles onto the floor at her feet. Anything with nowhere to land
+        // (she is walled in, or the floor is already heaped up) goes straight onto her back instead.
+        int spilled = particleField.Emit(standingCell, GrainsPerDigTick, material);
+
+        for (int i = spilled; i < GrainsPerDigTick && carriedGrains.Count < HaulCapacityGrains; i++)
+        {
+            carriedGrains.Add(material);
+        }
+
+        QueueRedraw();
+
+        // The wall is still standing - keep chipping at the same cell, unless this load is full.
+        if (!cellOpened)
+        {
+            if (carriedGrains.Count >= HaulCapacityGrains)
+            {
+                pendingDigCallback = null;
+                HaulGrainsThen(ResumeDigJob);
+                return;
+            }
+
+            digTimer.Start();
+            return;
+        }
 
         Vector2I dugCell = pendingDigCell;
         Action callback = pendingDigCallback;
         pendingDigCallback = null;
 
+        // Cell is through: scoop up the heap she has been piling at her feet, plus anything that
+        // tumbled into the new opening.
+        ScoopUpLooseGrains(standingCell);
+        ScoopUpLooseGrains(dugCell);
+
         // A full load gets hauled out immediately, mid-corridor, rather than waiting for the whole dig job to finish.
-        if (carriedDirt >= SpoilCarryCapacity)
+        if (carriedGrains.Count >= HaulCapacityGrains)
         {
-            FollowPath(new List<Vector2I> { dugCell }, () => HaulDirtThen(ResumeDigJob));
+            FollowPath(new List<Vector2I> { dugCell }, () => HaulGrainsThen(ResumeDigJob));
             return;
         }
 
         FollowPath(new List<Vector2I> { dugCell }, callback);
     }
 
-    // Walks to the spoil dump, deposits carried dirt, then continues whatever dig/forage job was interrupted to do it.
-    private void HaulDirtThen(Action afterDump)
+    private void ScoopUpLooseGrains(Vector2I cell)
+    {
+        int room = HaulCapacityGrains - carriedGrains.Count;
+
+        if (room > 0 && particleField.Collect(cell, room, carriedGrains) > 0)
+        {
+            QueueRedraw();
+        }
+    }
+
+    private void DropCarriedGrains()
+    {
+        if (carriedGrains.Count > 0)
+        {
+            particleField.Release(gridManager.WorldToCell(Position), carriedGrains);
+            QueueRedraw();
+        }
+    }
+
+    // Walks to the spoil dump, tips the load onto the pile beside it, then continues whatever
+    // dig/forage job was interrupted to do it.
+    private void HaulGrainsThen(Action afterDump)
     {
         Vector2I current = gridManager.WorldToCell(Position);
         List<Vector2I> route = gridManager.FindTunnelPath(current, gridManager.SpoilDumpCell) ?? new List<Vector2I> { current };
 
         FollowPath(route, () =>
         {
-            gridManager.DepositSpoil(carriedDirt);
-            carriedDirt = 0;
+            Vector2I arrived = gridManager.WorldToCell(Position);
+
+            // Only tip onto the pile if she actually reached the dump. If the route failed she never
+            // went anywhere, and the load has to go down at her feet rather than across the map.
+            bool atDump = GridManager.IsWithinReach(arrived, gridManager.SpoilDumpCell);
+
+            particleField.Release(atDump ? gridManager.SpoilPileCell : arrived, carriedGrains);
+            QueueRedraw();
             afterDump();
         });
     }
@@ -391,9 +564,9 @@ public partial class AntWorker : Area2D
 
         if (IsAdjacent(current, target))
         {
-            if (carriedDirt > 0)
+            if (carriedGrains.Count > 0)
             {
-                HaulDirtThen(ResumeDigJob);
+                HaulGrainsThen(ResumeDigJob);
                 return;
             }
 
@@ -462,6 +635,7 @@ public partial class AntWorker : Area2D
     {
         return Mathf.Abs(a.X - b.X) + Mathf.Abs(a.Y - b.Y) == 1;
     }
+
 
     private void StartBuilding()
     {

@@ -17,7 +17,7 @@ public partial class GridManager : Node2D
         SeedCache,
         MushroomPatch,
         BerryBush,
-        SpoilPile
+        Air
     }
 
     private const int ChunkSize = 16;
@@ -38,11 +38,16 @@ public partial class GridManager : Node2D
     public int Seed { get; set; } = 0;
 
     [Export]
-    public int SurfaceHeight { get; set; } = 4;
+    public int SurfaceHeight { get; set; } = 12;
+
+    // How many rows of actual topsoil sit at the surface. Everything above it is open sky, which is
+    // what gives spoil mounds somewhere to grow and trees somewhere to grow into.
+    [Export]
+    public int GrassDepth { get; set; } = 1;
 
     // How many cells below the surface the starting nest is carved.
     [Export]
-    public int NestDepth { get; set; } = 10;
+    public int NestDepth { get; set; } = 6;
 
     // How many chunks around the nest are generated immediately, so there's ground to see at the start.
     [Export]
@@ -90,10 +95,6 @@ public partial class GridManager : Node2D
     [Export]
     public int FoodPerBerryBush { get; set; } = 8;
 
-    // How much hauled dirt it takes to add one more visible tile to the spoil pile outside the nest.
-    [Export]
-    public int SpoilPerMoundTile { get; set; } = 3;
-
     [Export]
     public int FoodStorageCapacityBonus { get; set; } = 20;
 
@@ -118,6 +119,18 @@ public partial class GridManager : Node2D
         new Vector2I(1, 0)   // Right
     };
 
+    // Ants walk; they do not climb. Elevation only changes on a diagonal, which makes every route
+    // up or down a ramp that has to be dug as one.
+    private static readonly Vector2I[] MoveDirections =
+    {
+        new Vector2I(-1, 0),  // Left
+        new Vector2I(1, 0),   // Right
+        new Vector2I(-1, -1), // Ramp up-left
+        new Vector2I(1, -1),  // Ramp up-right
+        new Vector2I(-1, 1),  // Ramp down-left
+        new Vector2I(1, 1)    // Ramp down-right
+    };
+
     // These are the coordinates from your tileset.
     private static readonly Dictionary<TileType, Vector2I> TileAtlasCoords = new()
     {
@@ -133,8 +146,6 @@ public partial class GridManager : Node2D
         { TileType.SeedCache, new Vector2I(1, 2) },
         { TileType.MushroomPatch, new Vector2I(2, 2) },
         { TileType.BerryBush, new Vector2I(3, 2) },
-        // Reuses the Dirt tile's art - it's the same excavated soil, just piled up outside instead of in the ground.
-        { TileType.SpoilPile, new Vector2I(0, 0) },
     };
 
     private readonly Dictionary<Vector2I, TileType> grid = new();
@@ -142,9 +153,12 @@ public partial class GridManager : Node2D
 
     private readonly Dictionary<Vector2I, int> foodRemaining = new();
 
-    private List<Vector2I> spoilMoundCells;
-    private int moundTilesPlaced;
-    private int spoilStored;
+    // Solid cells are made of GrainsPerCell small pieces that ants chip out one at a time,
+    // so a wall visibly crumbles instead of flipping to open tunnel in one step.
+    public const int GrainsPerCell = 4;
+
+    private readonly Dictionary<Vector2I, int> grainsRemoved = new();
+
 
     private FastNoiseLite rockNoise;
     private FastNoiseLite foodNoise;
@@ -162,7 +176,6 @@ public partial class GridManager : Node2D
         InitializeNoise();
 
         NestCenterCell = new Vector2I(0, SurfaceHeight + NestDepth);
-        spoilMoundCells = BuildSpoilMoundLayout();
 
         // Pre-generate enough terrain around the nest to fill the initial view; everything further
         // out is generated on demand as ants path or dig toward it, so the map keeps expanding.
@@ -214,6 +227,57 @@ public partial class GridManager : Node2D
         return IsInBounds(cell) && IsWalkable(GetTile(cell));
     }
 
+    // An ant can only occupy an open cell that has solid ground directly beneath it. Open space with
+    // nothing under it is a drop, not a floor - that is what forces tunnels to be dug as ramps.
+    public bool IsStandable(Vector2I cell)
+    {
+        if (!IsInBounds(cell) || !IsWalkable(GetTile(cell)))
+        {
+            return false;
+        }
+
+        return !IsWalkable(GetTile(cell + new Vector2I(0, 1)));
+    }
+
+    // Fired when terrain changes at runtime, so overlays know to redraw.
+    [Signal]
+    public delegate void TerrainChangedEventHandler();
+
+    // Standability limited to cells that already exist, so simply looking at the world cannot force
+    // new chunks into being generated.
+    public bool IsKnownStandable(Vector2I cell)
+    {
+        if (!IsInBounds(cell) || !grid.TryGetValue(cell, out TileType tile) || !IsWalkable(tile))
+        {
+            return false;
+        }
+
+        return grid.TryGetValue(cell + new Vector2I(0, 1), out TileType below) && !IsWalkable(below);
+    }
+
+    // First cell with a floor at or below this one, for an ant left standing over open air.
+    public Vector2I FindFloorBelow(Vector2I cell)
+    {
+        const int MaxDrop = 64;
+
+        for (int depth = 0; depth < MaxDrop; depth++)
+        {
+            Vector2I candidate = cell + new Vector2I(0, depth);
+
+            if (IsStandable(candidate))
+            {
+                return candidate;
+            }
+
+            if (!IsInBounds(candidate) || !IsWalkable(GetTile(candidate)))
+            {
+                break;
+            }
+        }
+
+        return cell;
+    }
+
     // Fired whenever a cell actually transitions to Tunnel, regardless of what caused the dig.
     [Signal]
     public delegate void CellDugEventHandler(Vector2I cell);
@@ -232,6 +296,8 @@ public partial class GridManager : Node2D
             return;
         }
 
+        grainsRemoved.Remove(cell);
+
         SetTile(cell, TileType.Tunnel);
 
         if (IsFoodTileType(previous))
@@ -241,7 +307,37 @@ public partial class GridManager : Node2D
         }
 
         EmitSignal(SignalName.CellDug, cell);
+        EmitSignal(SignalName.TerrainChanged);
     }
+
+    // Chips a single grain out of a solid cell. Returns true once there's nothing left to dig here -
+    // either the cell gave up its last grain and became open tunnel, or it was never diggable.
+    public bool DigGrain(Vector2I cell)
+    {
+        if (!CanDig(cell))
+        {
+            return true;
+        }
+
+        int removed = GetGrainsRemoved(cell) + 1;
+
+        if (removed >= GrainsPerCell)
+        {
+            Dig(cell);
+            return true;
+        }
+
+        grainsRemoved[cell] = removed;
+        return false;
+    }
+
+    public int GetGrainsRemoved(Vector2I cell)
+    {
+        return grainsRemoved.TryGetValue(cell, out int removed) ? removed : 0;
+    }
+
+    // Cells part-way through excavation, for the crumble overlay to draw.
+    public IReadOnlyDictionary<Vector2I, int> PartiallyDugCells => grainsRemoved;
 
     public bool IsFoodSource(Vector2I cell)
     {
@@ -265,59 +361,28 @@ public partial class GridManager : Node2D
         return new List<Vector2I>(foodRemaining.Keys);
     }
 
-    // The surface cell ants haul dug-out dirt to and dump it at.
-    public Vector2I SpoilDumpCell => new Vector2I(NestCenterCell.X, SurfaceHeight - 1);
+    // Where ants stand to unload. Kept clear of packing so a hauler can never seal itself in.
+    public Vector2I SpoilDumpCell => new Vector2I(NestCenterCell.X + 5, SurfaceHeight - 1);
 
-    // Called by ants when they finish a haul trip. Grows the visible spoil pile outside the nest.
-    public void DepositSpoil(int amount)
+    // The column beside the dump that hauled spoil actually piles up in.
+    public Vector2I SpoilPileCell => SpoilDumpCell + new Vector2I(1, 0);
+
+    public TileType GetTileAt(Vector2I cell)
     {
-        if (amount <= 0)
+        return GetTile(cell);
+    }
+
+    // Loose grains have filled this cell right up, so it becomes ordinary solid ground again.
+    public void PackCellToDirt(Vector2I cell)
+    {
+        if (!IsInBounds(cell))
         {
             return;
         }
 
-        spoilStored += amount;
-
-        int previousTiles = moundTilesPlaced;
-        int targetTiles = Mathf.Min(spoilStored / SpoilPerMoundTile, spoilMoundCells.Count);
-
-        while (moundTilesPlaced < targetTiles)
-        {
-            SetTile(spoilMoundCells[moundTilesPlaced], TileType.SpoilPile);
-            moundTilesPlaced++;
-        }
-
-        if (previousTiles == 0 && moundTilesPlaced > 0)
-        {
-            ColonyManager?.RaiseAlert("A spoil pile is forming outside the nest.");
-        }
-        else if (previousTiles < spoilMoundCells.Count && moundTilesPlaced == spoilMoundCells.Count)
-        {
-            ColonyManager?.RaiseAlert("The spoil pile outside the nest is complete!");
-        }
-    }
-
-    // A small pyramid of dump slots just beside the entrance shaft, filled in order as dirt piles up.
-    private List<Vector2I> BuildSpoilMoundLayout()
-    {
-        int baseRow = SurfaceHeight - 1;
-        int baseX = NestCenterCell.X + 3;
-
-        var cells = new List<Vector2I>();
-
-        for (int dx = -2; dx <= 2; dx++)
-        {
-            cells.Add(new Vector2I(baseX + dx, baseRow));
-        }
-
-        for (int dx = -1; dx <= 1; dx++)
-        {
-            cells.Add(new Vector2I(baseX + dx, baseRow - 1));
-        }
-
-        cells.Add(new Vector2I(baseX, baseRow - 2));
-
-        return cells;
+        grainsRemoved.Remove(cell);
+        SetTile(cell, TileType.Dirt);
+        EmitSignal(SignalName.TerrainChanged);
     }
 
     private static bool IsFoodTileType(TileType type)
@@ -348,9 +413,11 @@ public partial class GridManager : Node2D
 
         if (remaining <= 0)
         {
+            grainsRemoved.Remove(cell);
             foodRemaining.Remove(cell);
             TileType depletedTo = IsUndergroundFoodTileType(GetTile(cell)) ? TileType.Tunnel : TileType.Grass;
             SetTile(cell, depletedTo);
+            EmitSignal(SignalName.TerrainChanged);
         }
         else
         {
@@ -405,11 +472,11 @@ public partial class GridManager : Node2D
         {
             Vector2I current = frontier.Dequeue();
 
-            foreach (Vector2I direction in Directions)
+            foreach (Vector2I direction in MoveDirections)
             {
                 Vector2I next = current + direction;
 
-                if (visited.Contains(next) || !IsInBounds(next) || !IsWalkable(GetTile(next)))
+                if (visited.Contains(next) || !IsStandable(next))
                 {
                     continue;
                 }
@@ -428,27 +495,110 @@ public partial class GridManager : Node2D
         return NestCenterCell;
     }
 
-    // The next cell to step into when walking a straight line from `from` toward `to`.
+    // The next cell to carve when tunnelling from `from` toward `to`.
+    //
+    // Height is only ever gained or lost diagonally, so a corridor that has to descend comes out as a
+    // staircase an ant can walk rather than a shaft nothing can climb. The router also avoids cutting
+    // the floor out from under a cell it already opened, which would strand anything standing there.
     public Vector2I GetStepToward(Vector2I from, Vector2I to)
     {
-        int dx = to.X - from.X;
-        int dy = to.Y - from.Y;
+        const float UnderminePenalty = 10000f;
+        const float UnsupportedPenalty = 5000f;
 
-        if (Mathf.Abs(dx) >= Mathf.Abs(dy))
+        // Within reach, break straight in - unless the target is directly above or below, which would
+        // undercut the cell she is standing in and leave a one-way drop. Then sidestep first so the
+        // last move onto it is a diagonal she can also walk back up.
+        if (Mathf.Max(Mathf.Abs(to.X - from.X), Mathf.Abs(to.Y - from.Y)) <= 1)
         {
-            return from + new Vector2I(Mathf.Sign(dx), 0);
+            return to.X != from.X ? to : SidestepFor(from, to);
         }
 
-        return from + new Vector2I(0, Mathf.Sign(dy));
+        Vector2I best = from;
+        float bestScore = float.MaxValue;
+
+        foreach (Vector2I direction in MoveDirections)
+        {
+            Vector2I candidate = from + direction;
+
+            if (!IsInBounds(candidate))
+            {
+                continue;
+            }
+
+            TileType tile = GetTile(candidate);
+
+            if (!IsWalkable(tile) && !IsDiggable(tile))
+            {
+                continue;
+            }
+
+            int offX = candidate.X - to.X;
+            int offY = candidate.Y - to.Y;
+            float score = offX * offX + offY * offY;
+
+            if (IsWalkable(GetTile(candidate + new Vector2I(0, -1))))
+            {
+                score += UnderminePenalty;
+            }
+
+            if (IsWalkable(GetTile(candidate + new Vector2I(0, 1))))
+            {
+                score += UnsupportedPenalty;
+            }
+
+            if (score < bestScore)
+            {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+
+        // Boxed in on every side by rock: fall back to a plain step so the caller still makes progress.
+        if (best == from)
+        {
+            int stepX = Mathf.Sign(to.X - from.X);
+            best = from + new Vector2I(stepX == 0 ? 1 : stepX, Mathf.Sign(to.Y - from.Y));
+        }
+
+        return best;
     }
 
-    // The closest already-dug tunnel cell to `from`, reached by expanding outward regardless of tile type.
+    // A step to one side, so a target sitting directly above or below can be reached on a diagonal.
+    private Vector2I SidestepFor(Vector2I from, Vector2I to)
+    {
+        Vector2I right = from + new Vector2I(1, 0);
+        Vector2I left = from + new Vector2I(-1, 0);
+
+        bool rightOpen = IsWalkable(GetTile(right)) || IsDiggable(GetTile(right));
+        bool leftOpen = IsWalkable(GetTile(left)) || IsDiggable(GetTile(left));
+
+        if (rightOpen && !leftOpen)
+        {
+            return right;
+        }
+
+        if (leftOpen && !rightOpen)
+        {
+            return left;
+        }
+
+        if (!rightOpen && !leftOpen)
+        {
+            // Solid rock either side - nothing to do but break straight in and accept the drop.
+            return to;
+        }
+
+        // Both usable: pick the side that keeps a floor under the cell she is leaving.
+        return IsWalkable(GetTile(right + new Vector2I(0, 1))) ? left : right;
+    }
+
+    // The closest cell an ant could actually stand in, expanding outward regardless of tile type.
     // Bounded so a click far into unexplored territory can't trigger unbounded chunk generation.
     public Vector2I FindNearestTunnelCell(Vector2I from)
     {
         const int MaxVisited = 4000;
 
-        if (IsWalkable(GetTile(from)))
+        if (IsStandable(from))
         {
             return from;
         }
@@ -472,7 +622,7 @@ public partial class GridManager : Node2D
 
                 visited.Add(next);
 
-                if (IsWalkable(GetTile(next)))
+                if (IsStandable(next))
                 {
                     return next;
                 }
@@ -483,6 +633,110 @@ public partial class GridManager : Node2D
 
         // No tunnel is reachable nearby.
         return from;
+    }
+
+
+    // Plans a corridor from `start` toward `goal` that is still walkable once it has been carved.
+    //
+    // A greedy per-step router cannot do this: it makes locally sensible moves and then saws off its
+    // own approach when a switchback doubles back underneath itself. Planning the whole run up front
+    // lets three rules hold along the entire route - only horizontal and diagonal moves, every cell
+    // with solid ground under it, and no cell tucked directly beneath one the route already opened.
+    //
+    // Ends at the first cell from which `goal` is within reach, since an ant digs a cell by standing
+    // next to it, not by standing in it. Null if no walkable corridor exists.
+    public List<Vector2I> PlanDigRoute(Vector2I start, Vector2I goal)
+    {
+        const int MaxVisited = 6000;
+        const int AncestorsChecked = 4;
+
+        if (IsWithinReach(start, goal))
+        {
+            return new List<Vector2I> { start };
+        }
+
+        var cameFrom = new Dictionary<Vector2I, Vector2I>();
+        var visited = new HashSet<Vector2I> { start };
+        var frontier = new Queue<Vector2I>();
+        frontier.Enqueue(start);
+
+        while (frontier.Count > 0 && visited.Count < MaxVisited)
+        {
+            Vector2I current = frontier.Dequeue();
+
+            foreach (Vector2I direction in MoveDirections)
+            {
+                Vector2I next = current + direction;
+
+                if (visited.Contains(next) || !IsInBounds(next))
+                {
+                    continue;
+                }
+
+                TileType tile = GetTile(next);
+
+                if (!IsWalkable(tile) && !IsDiggable(tile))
+                {
+                    continue;
+                }
+
+                // Must not destroy a floor that something is already standing on up there.
+                if (IsStandable(next + new Vector2I(0, -1)))
+                {
+                    continue;
+                }
+
+                // Needs something solid to stand on once it has been carved out.
+                if (IsWalkable(GetTile(next + new Vector2I(0, 1))))
+                {
+                    continue;
+                }
+
+                if (UnderminesRoute(cameFrom, start, current, next, AncestorsChecked))
+                {
+                    continue;
+                }
+
+                visited.Add(next);
+                cameFrom[next] = current;
+
+                if (IsWithinReach(next, goal))
+                {
+                    return BuildPath(cameFrom, start, next);
+                }
+
+                frontier.Enqueue(next);
+            }
+        }
+
+        return null;
+    }
+
+    // True if carving `next` would pull the floor out from under a cell the route just opened.
+    private static bool UnderminesRoute(Dictionary<Vector2I, Vector2I> cameFrom, Vector2I start, Vector2I current, Vector2I next, int depth)
+    {
+        Vector2I above = next + new Vector2I(0, -1);
+        Vector2I node = current;
+
+        for (int i = 0; i < depth; i++)
+        {
+            if (node == above)
+            {
+                return true;
+            }
+
+            if (node == start || !cameFrom.TryGetValue(node, out node))
+            {
+                break;
+            }
+        }
+
+        return false;
+    }
+
+    public static bool IsWithinReach(Vector2I a, Vector2I b)
+    {
+        return Mathf.Max(Mathf.Abs(a.X - b.X), Mathf.Abs(a.Y - b.Y)) <= 1;
     }
 
     // Shortest walkable route from `start` to `goal` through already-dug tunnel cells, or null if unreachable.
@@ -502,11 +756,11 @@ public partial class GridManager : Node2D
         {
             Vector2I current = frontier.Dequeue();
 
-            foreach (Vector2I direction in Directions)
+            foreach (Vector2I direction in MoveDirections)
             {
                 Vector2I next = current + direction;
 
-                if (visited.Contains(next) || !IsInBounds(next) || !IsWalkable(GetTile(next)))
+                if (visited.Contains(next) || !IsStandable(next))
                 {
                     continue;
                 }
@@ -605,9 +859,13 @@ public partial class GridManager : Node2D
         int y = cell.Y;
         TileType type;
 
-        if (y < SurfaceHeight)
+        if (y < SurfaceHeight - GrassDepth)
         {
-            // Above ground: open grass dotted with water pools and trees.
+            type = TileType.Air;
+        }
+        else if (y < SurfaceHeight)
+        {
+            // The topsoil band: grass dotted with water pools, trees and bushes.
             if (waterNoise.GetNoise2D(x, y) > WaterThreshold)
             {
                 type = TileType.Water;
@@ -699,6 +957,15 @@ public partial class GridManager : Node2D
     private void SetTile(Vector2I cell, TileType type)
     {
         grid[cell] = type;
+
+        if (type == TileType.Air)
+        {
+            // Open sky has no artwork - erasing leaves the background showing through, which also
+            // means it costs no slot in an atlas that is already full.
+            Ground.EraseCell(cell);
+            return;
+        }
+
         Ground.SetCell(cell, 0, TileAtlasCoords[type]);
     }
 
@@ -709,29 +976,43 @@ public partial class GridManager : Node2D
 
     private static bool IsWalkable(TileType type)
     {
-        return type == TileType.Tunnel || type == TileType.FoodStorage || type == TileType.NestChamber || type == TileType.Grass;
+        return type == TileType.Tunnel
+            || type == TileType.FoodStorage
+            || type == TileType.NestChamber
+            || type == TileType.Grass
+            || type == TileType.Air;
     }
 
     private void CreateStartingNest()
     {
-        // Carve a small 5x5 room, clearing straight through any rock or deposits generation placed there.
-        for (int x = NestCenterCell.X - 2; x <= NestCenterCell.X + 2; x++)
+        int floorY = NestCenterCell.Y;
+
+        // A tight starting chamber - two rows tall, so ants walk its floor rather than swimming
+        // around inside a big hollow box.
+        for (int x = NestCenterCell.X - 1; x <= NestCenterCell.X + 1; x++)
         {
-            for (int y = NestCenterCell.Y - 2; y <= NestCenterCell.Y + 2; y++)
+            for (int y = floorY - 1; y <= floorY; y++)
             {
                 ForceDig(new Vector2I(x, y));
             }
         }
 
-        // Carve an entrance shaft connecting the nest up to the surface.
-        for (int y = SurfaceHeight; y < NestCenterCell.Y - 2; y++)
-        {
-            ForceDig(new Vector2I(NestCenterCell.X, y));
-        }
-
+        CarveEntranceRamp(floorY);
         ClearSurfaceEntrance();
 
         GD.Print("Starting nest created!");
+    }
+
+    // A zigzag staircase from the chamber up to daylight. Each row steps one cell sideways, so every
+    // move along it is a diagonal an ant can walk, and the whole thing stays two cells wide.
+    private void CarveEntranceRamp(int floorY)
+    {
+        int rampX = NestCenterCell.X + 2;
+
+        for (int y = floorY; y >= SurfaceHeight - 1; y--)
+        {
+            ForceDig(new Vector2I(rampX + ((floorY - y) % 2), y));
+        }
     }
 
     private void ClearSurfaceEntrance()
@@ -743,7 +1024,8 @@ public partial class GridManager : Node2D
             return;
         }
 
-        for (int x = NestCenterCell.X - 1; x <= NestCenterCell.X + 1; x++)
+        // Entrance, plus the dump cell and pile column beside it, so haulers always have clear ground.
+        for (int x = NestCenterCell.X - 1; x <= NestCenterCell.X + 6; x++)
         {
             Vector2I cell = new Vector2I(x, surfaceRow);
             foodRemaining.Remove(cell);
