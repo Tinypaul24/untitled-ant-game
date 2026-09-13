@@ -168,7 +168,7 @@ text = "Build"
 anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -270.0
+offset_left = -320.0
 offset_top = 52.0
 offset_right = -120.0
 offset_bottom = 76.0
@@ -177,6 +177,12 @@ grow_horizontal = 0
 [node name="SpeedButtons" type="HBoxContainer" parent="UI/ThemeRoot/SpeedPanel"]
 layout_mode = 2
 theme_override_constants/separation = 4
+
+[node name="PauseButton" type="Button" parent="UI/ThemeRoot/SpeedPanel/SpeedButtons"]
+layout_mode = 2
+tooltip_text = "Pause the simulation."
+toggle_mode = true
+text = "⏸"
 
 [node name="Speed1xButton" type="Button" parent="UI/ThemeRoot/SpeedPanel/SpeedButtons"]
 layout_mode = 2

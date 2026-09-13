@@ -15,10 +15,13 @@ public partial class ColonyUI : CanvasLayer
     private Button layEggButton;
     private Label clockLabel;
 
+    private Button pauseButton;
     private Button speed1xButton;
     private Button speed2xButton;
     private Button speed3xButton;
     private Button speed4xButton;
+
+    private float currentSpeed = 1f;
 
     private Button buildButton;
     private Control buildTray;
@@ -51,6 +54,7 @@ public partial class ColonyUI : CanvasLayer
         layEggButton = GetNode<Button>("ThemeRoot/BottomBar/Actions/LayEggButton");
         clockLabel = GetNode<Label>("ThemeRoot/ClockLabel");
 
+        pauseButton = GetNode<Button>("ThemeRoot/SpeedPanel/SpeedButtons/PauseButton");
         speed1xButton = GetNode<Button>("ThemeRoot/SpeedPanel/SpeedButtons/Speed1xButton");
         speed2xButton = GetNode<Button>("ThemeRoot/SpeedPanel/SpeedButtons/Speed2xButton");
         speed3xButton = GetNode<Button>("ThemeRoot/SpeedPanel/SpeedButtons/Speed3xButton");
@@ -79,10 +83,13 @@ public partial class ColonyUI : CanvasLayer
 
         // Speed controls scale Engine.TimeScale directly, which every delta-based system (movement,
         // dig/forage/build timers, upkeep, the clock) already reads from - nothing else needs to know.
-        speed1xButton.Pressed += () => Engine.TimeScale = 1f;
-        speed2xButton.Pressed += () => Engine.TimeScale = 2f;
-        speed3xButton.Pressed += () => Engine.TimeScale = 3f;
-        speed4xButton.Pressed += () => Engine.TimeScale = 4f;
+        speed1xButton.Pressed += () => SetSpeed(1f);
+        speed2xButton.Pressed += () => SetSpeed(2f);
+        speed3xButton.Pressed += () => SetSpeed(3f);
+        speed4xButton.Pressed += () => SetSpeed(4f);
+
+        // Pause freezes time at 0x and remembers whatever speed was active, so unpausing resumes there.
+        pauseButton.Toggled += OnPauseToggled;
 
         // Toggle the build tray, and start placement when a building is chosen.
         buildButton.Pressed += () => buildTray.Visible = !buildTray.Visible;
@@ -118,6 +125,23 @@ public partial class ColonyUI : CanvasLayer
             $"Upkeep: {colonyManager.UpkeepPerHour} food/hour ({colonyManager.Ants} ants, {colonyManager.LarvaCount} larvae)";
 
         eggLabel.Text = $"🥚 Eggs: {colonyManager.Egg}";
+    }
+
+    private void SetSpeed(float scale)
+    {
+        currentSpeed = scale;
+
+        // Clicking a speed while paused should also resume - avoid re-entering OnPauseToggled to do it.
+        pauseButton.SetPressedNoSignal(false);
+        pauseButton.Text = "⏸";
+
+        Engine.TimeScale = scale;
+    }
+
+    private void OnPauseToggled(bool paused)
+    {
+        pauseButton.Text = paused ? "▶" : "⏸";
+        Engine.TimeScale = paused ? 0f : currentSpeed;
     }
 
     private void ShowToast(string message)
