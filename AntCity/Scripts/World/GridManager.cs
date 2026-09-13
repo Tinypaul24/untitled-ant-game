@@ -16,7 +16,8 @@ public partial class GridManager : Node2D
         NestChamber,
         SeedCache,
         MushroomPatch,
-        BerryBush
+        BerryBush,
+        SpoilPile
     }
 
     private const int ChunkSize = 16;
@@ -89,6 +90,10 @@ public partial class GridManager : Node2D
     [Export]
     public int FoodPerBerryBush { get; set; } = 8;
 
+    // How much hauled dirt it takes to add one more visible tile to the spoil pile outside the nest.
+    [Export]
+    public int SpoilPerMoundTile { get; set; } = 3;
+
     [Export]
     public int FoodStorageCapacityBonus { get; set; } = 20;
 
@@ -128,12 +133,18 @@ public partial class GridManager : Node2D
         { TileType.SeedCache, new Vector2I(1, 2) },
         { TileType.MushroomPatch, new Vector2I(2, 2) },
         { TileType.BerryBush, new Vector2I(3, 2) },
+        // Reuses the Dirt tile's art - it's the same excavated soil, just piled up outside instead of in the ground.
+        { TileType.SpoilPile, new Vector2I(0, 0) },
     };
 
     private readonly Dictionary<Vector2I, TileType> grid = new();
     private readonly HashSet<Vector2I> generatedChunks = new();
 
     private readonly Dictionary<Vector2I, int> foodRemaining = new();
+
+    private List<Vector2I> spoilMoundCells;
+    private int moundTilesPlaced;
+    private int spoilStored;
 
     private FastNoiseLite rockNoise;
     private FastNoiseLite foodNoise;
@@ -151,6 +162,7 @@ public partial class GridManager : Node2D
         InitializeNoise();
 
         NestCenterCell = new Vector2I(0, SurfaceHeight + NestDepth);
+        spoilMoundCells = BuildSpoilMoundLayout();
 
         // Pre-generate enough terrain around the nest to fill the initial view; everything further
         // out is generated on demand as ants path or dig toward it, so the map keeps expanding.
@@ -251,6 +263,61 @@ public partial class GridManager : Node2D
     public List<Vector2I> GetFoodSourceCells()
     {
         return new List<Vector2I>(foodRemaining.Keys);
+    }
+
+    // The surface cell ants haul dug-out dirt to and dump it at.
+    public Vector2I SpoilDumpCell => new Vector2I(NestCenterCell.X, SurfaceHeight - 1);
+
+    // Called by ants when they finish a haul trip. Grows the visible spoil pile outside the nest.
+    public void DepositSpoil(int amount)
+    {
+        if (amount <= 0)
+        {
+            return;
+        }
+
+        spoilStored += amount;
+
+        int previousTiles = moundTilesPlaced;
+        int targetTiles = Mathf.Min(spoilStored / SpoilPerMoundTile, spoilMoundCells.Count);
+
+        while (moundTilesPlaced < targetTiles)
+        {
+            SetTile(spoilMoundCells[moundTilesPlaced], TileType.SpoilPile);
+            moundTilesPlaced++;
+        }
+
+        if (previousTiles == 0 && moundTilesPlaced > 0)
+        {
+            ColonyManager?.RaiseAlert("A spoil pile is forming outside the nest.");
+        }
+        else if (previousTiles < spoilMoundCells.Count && moundTilesPlaced == spoilMoundCells.Count)
+        {
+            ColonyManager?.RaiseAlert("The spoil pile outside the nest is complete!");
+        }
+    }
+
+    // A small pyramid of dump slots just beside the entrance shaft, filled in order as dirt piles up.
+    private List<Vector2I> BuildSpoilMoundLayout()
+    {
+        int baseRow = SurfaceHeight - 1;
+        int baseX = NestCenterCell.X + 3;
+
+        var cells = new List<Vector2I>();
+
+        for (int dx = -2; dx <= 2; dx++)
+        {
+            cells.Add(new Vector2I(baseX + dx, baseRow));
+        }
+
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            cells.Add(new Vector2I(baseX + dx, baseRow - 1));
+        }
+
+        cells.Add(new Vector2I(baseX, baseRow - 2));
+
+        return cells;
     }
 
     private static bool IsFoodTileType(TileType type)

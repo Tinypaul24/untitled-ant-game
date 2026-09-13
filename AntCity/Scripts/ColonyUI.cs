@@ -13,6 +13,11 @@ public partial class ColonyUI : CanvasLayer
     private Button layEggButton;
     private Label clockLabel;
 
+    private Button speed1xButton;
+    private Button speed2xButton;
+    private Button speed3xButton;
+    private Button speed4xButton;
+
     private Button buildButton;
     private Control buildTray;
     private Button nestingChamberButton;
@@ -38,6 +43,11 @@ public partial class ColonyUI : CanvasLayer
         layEggButton = GetNode<Button>("ThemeRoot/BottomBar/Actions/LayEggButton");
         clockLabel = GetNode<Label>("ThemeRoot/ClockLabel");
 
+        speed1xButton = GetNode<Button>("ThemeRoot/SpeedPanel/SpeedButtons/Speed1xButton");
+        speed2xButton = GetNode<Button>("ThemeRoot/SpeedPanel/SpeedButtons/Speed2xButton");
+        speed3xButton = GetNode<Button>("ThemeRoot/SpeedPanel/SpeedButtons/Speed3xButton");
+        speed4xButton = GetNode<Button>("ThemeRoot/SpeedPanel/SpeedButtons/Speed4xButton");
+
         buildButton = GetNode<Button>("ThemeRoot/BottomBar/Actions/BuildButton");
         buildTray = GetNode<Control>("ThemeRoot/BuildTray");
         nestingChamberButton = GetNode<Button>("ThemeRoot/BuildTray/NestingChamberButton");
@@ -58,6 +68,13 @@ public partial class ColonyUI : CanvasLayer
 
         // Lay an egg when the button is pressed.
         layEggButton.Pressed += queen.LayEgg;
+
+        // Speed controls scale Engine.TimeScale directly, which every delta-based system (movement,
+        // dig/forage/build timers, upkeep, the clock) already reads from - nothing else needs to know.
+        speed1xButton.Pressed += () => Engine.TimeScale = 1f;
+        speed2xButton.Pressed += () => Engine.TimeScale = 2f;
+        speed3xButton.Pressed += () => Engine.TimeScale = 3f;
+        speed4xButton.Pressed += () => Engine.TimeScale = 4f;
 
         // Toggle the build tray, and start placement when a building is chosen.
         buildButton.Pressed += () => buildTray.Visible = !buildTray.Visible;

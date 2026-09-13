@@ -31,6 +31,8 @@ texture = ExtResource("3_r1jm0")
 [sub_resource type="TileSet" id="TileSet_xkah1"]
 sources/0 = SubResource("TileSetAtlasSource_lswqd")
 
+[sub_resource type="ButtonGroup" id="ButtonGroup_speed"]
+
 [node name="Main" type="Node2D" unique_id=41876820]
 script = ExtResource("1_qf7qf")
 
@@ -161,6 +163,45 @@ text = "Lay Egg"
 [node name="BuildButton" type="Button" parent="UI/ThemeRoot/BottomBar/Actions"]
 layout_mode = 2
 text = "Build"
+
+[node name="SpeedPanel" type="PanelContainer" parent="UI/ThemeRoot"]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -270.0
+offset_top = 52.0
+offset_right = -120.0
+offset_bottom = 76.0
+grow_horizontal = 0
+
+[node name="SpeedButtons" type="HBoxContainer" parent="UI/ThemeRoot/SpeedPanel"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="Speed1xButton" type="Button" parent="UI/ThemeRoot/SpeedPanel/SpeedButtons"]
+layout_mode = 2
+toggle_mode = true
+button_pressed = true
+button_group = SubResource("ButtonGroup_speed")
+text = "1x"
+
+[node name="Speed2xButton" type="Button" parent="UI/ThemeRoot/SpeedPanel/SpeedButtons"]
+layout_mode = 2
+toggle_mode = true
+button_group = SubResource("ButtonGroup_speed")
+text = "2x"
+
+[node name="Speed3xButton" type="Button" parent="UI/ThemeRoot/SpeedPanel/SpeedButtons"]
+layout_mode = 2
+toggle_mode = true
+button_group = SubResource("ButtonGroup_speed")
+text = "3x"
+
+[node name="Speed4xButton" type="Button" parent="UI/ThemeRoot/SpeedPanel/SpeedButtons"]
+layout_mode = 2
+toggle_mode = true
+button_group = SubResource("ButtonGroup_speed")
+text = "4x"
 
 [node name="ClockLabel" type="Label" parent="UI/ThemeRoot" unique_id=1546773717]
 anchors_preset = 1

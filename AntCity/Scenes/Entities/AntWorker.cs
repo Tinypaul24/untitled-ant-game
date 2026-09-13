@@ -23,6 +23,8 @@ public partial class AntWorker : Area2D
     private const float ForageSeconds = 1f;
     private const int ForageCarryCapacity = 5;
     private const int HarvestPerTick = 1;
+    private const int SpoilPerCell = 2;
+    private const int SpoilCarryCapacity = 6;
 
     private static readonly Color SelectionRingColor = new Color(1f, 1f, 0.4f);
 
@@ -52,6 +54,7 @@ public partial class AntWorker : Area2D
     private Action pendingDigCallback;
     private Vector2I? forageTarget;
     private int carriedFood;
+    private int carriedDirt;
     private Room pendingRoom;
     private Vector2I? claimedJobCell;
 
@@ -188,7 +191,7 @@ public partial class AntWorker : Area2D
         FollowPath(route, DigTowardTarget);
     }
 
-    // Stops whatever timed task is running, refunds any carried food, and clears the forage target.
+    // Stops whatever timed task is running, refunds any carried food, drops any carried dirt, and clears the forage target.
     private void StopCurrentTask()
     {
         if (state == State.Digging)
@@ -209,6 +212,9 @@ public partial class AntWorker : Area2D
             colonyManager.AddFood(carriedFood);
             carriedFood = 0;
         }
+
+        // Unlike food, an interrupted haul just loses the dirt - it's not worth tracking a dropped pile mid-tunnel.
+        carriedDirt = 0;
 
         forageTarget = null;
     }
@@ -292,8 +298,21 @@ public partial class AntWorker : Area2D
         if (current == digTarget)
         {
             claimedJobCell = null;
-            wanderHome = Position;
-            GoIdle();
+
+            if (carriedDirt > 0)
+            {
+                HaulDirtThen(() =>
+                {
+                    wanderHome = Position;
+                    GoIdle();
+                });
+            }
+            else
+            {
+                wanderHome = Position;
+                GoIdle();
+            }
+
             return;
         }
 
@@ -303,12 +322,48 @@ public partial class AntWorker : Area2D
     private void OnDigTimeout()
     {
         gridManager.Dig(pendingDigCell);
+        carriedDirt += SpoilPerCell;
 
         Vector2I dugCell = pendingDigCell;
         Action callback = pendingDigCallback;
         pendingDigCallback = null;
 
+        // A full load gets hauled out immediately, mid-corridor, rather than waiting for the whole dig job to finish.
+        if (carriedDirt >= SpoilCarryCapacity)
+        {
+            FollowPath(new List<Vector2I> { dugCell }, () => HaulDirtThen(ResumeDigJob));
+            return;
+        }
+
         FollowPath(new List<Vector2I> { dugCell }, callback);
+    }
+
+    // Walks to the spoil dump, deposits carried dirt, then continues whatever dig/forage job was interrupted to do it.
+    private void HaulDirtThen(Action afterDump)
+    {
+        Vector2I current = gridManager.WorldToCell(Position);
+        List<Vector2I> route = gridManager.FindTunnelPath(current, gridManager.SpoilDumpCell) ?? new List<Vector2I> { current };
+
+        FollowPath(route, () =>
+        {
+            gridManager.DepositSpoil(carriedDirt);
+            carriedDirt = 0;
+            afterDump();
+        });
+    }
+
+    // Re-enters whichever job was interrupted for a haul trip, by target rather than by raw callback,
+    // since the ant is now standing at the dump and needs a fresh route back to the dig front.
+    private void ResumeDigJob()
+    {
+        if (forageTarget.HasValue)
+        {
+            CommandForage(forageTarget.Value);
+        }
+        else
+        {
+            IssueDigCommand(digTarget, digTarget);
+        }
     }
 
     // Shared by plain digging and forage-approach: walk into the next cell if it's already open, otherwise dig through it first.
@@ -336,6 +391,12 @@ public partial class AntWorker : Area2D
 
         if (IsAdjacent(current, target))
         {
+            if (carriedDirt > 0)
+            {
+                HaulDirtThen(ResumeDigJob);
+                return;
+            }
+
             state = State.Foraging;
             forageTimer.Start();
             return;
