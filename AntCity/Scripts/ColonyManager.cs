@@ -26,6 +26,15 @@ public partial class ColonyManager : Node
     [Signal]
     public delegate void ColonyChangedEventHandler();
 
+    // Fired for events worth surfacing to the player as a toast (starvation, room completions, ...).
+    [Signal]
+    public delegate void AlertEventHandler(string message);
+
+    public void RaiseAlert(string message)
+    {
+        EmitSignal(SignalName.Alert, message);
+    }
+
     public override void _Ready()
     {
         GD.Print("Colony Manager started!");
@@ -171,10 +180,12 @@ public partial class ColonyManager : Node
             Food = 0;
             starvingIntervalStreak++;
             GD.Print($"The colony is starving! ({starvingIntervalStreak} interval(s) with no food)");
+            RaiseAlert("The colony is starving!");
 
             if (starvingIntervalStreak >= StarvingIntervalsBeforeLoss && RemoveAnt())
             {
                 GD.Print("An ant has starved to death.");
+                RaiseAlert("An ant has starved to death.");
                 starvingIntervalStreak = 0;
             }
         }
