@@ -5,8 +5,10 @@ public partial class ColonyUI : CanvasLayer
     private const double ToastHoldSeconds = 2.5;
     private const double ToastFadeSeconds = 0.4;
 
+    private Control populationBlock;
     private Label populationLabel;
     private ProgressBar populationBar;
+    private Control foodBlock;
     private Label foodLabel;
     private ProgressBar foodBar;
     private Label eggLabel;
@@ -35,11 +37,17 @@ public partial class ColonyUI : CanvasLayer
 
     public override void _Ready()
     {
+        populationBlock = GetNode<Control>("ThemeRoot/TopBar/Stats/PopulationBlock");
         populationLabel = GetNode<Label>("ThemeRoot/TopBar/Stats/PopulationBlock/ColonyLabel");
         populationBar = GetNode<ProgressBar>("ThemeRoot/TopBar/Stats/PopulationBlock/PopulationBar");
+        foodBlock = GetNode<Control>("ThemeRoot/TopBar/Stats/FoodBlock");
         foodLabel = GetNode<Label>("ThemeRoot/TopBar/Stats/FoodBlock/FoodLabel");
         foodBar = GetNode<ProgressBar>("ThemeRoot/TopBar/Stats/FoodBlock/FoodBar");
         eggLabel = GetNode<Label>("ThemeRoot/TopBar/Stats/EggLabel");
+
+        // Static explainer tooltips - the food block's is refreshed in UpdateUI() since it shows live rates.
+        populationBlock.TooltipText = "Population capacity for ants, eggs, and larvae combined. Build Nesting Chambers to raise it.";
+        eggLabel.TooltipText = "Eggs the Queen has laid. Each one hatches into a larva, which then matures into a worker ant.";
         layEggButton = GetNode<Button>("ThemeRoot/BottomBar/Actions/LayEggButton");
         clockLabel = GetNode<Label>("ThemeRoot/ClockLabel");
 
@@ -104,6 +112,10 @@ public partial class ColonyUI : CanvasLayer
         foodLabel.Text = $"🍖 Food: {colonyManager.Food}/{colonyManager.FoodCapacity}";
         foodBar.MaxValue = colonyManager.FoodCapacity;
         foodBar.Value = colonyManager.Food;
+        foodBlock.TooltipText =
+            "Food feeds every ant and larva each in-game hour, and pays the cost of laying eggs and building rooms.\n\n" +
+            $"Generating: {colonyManager.FoodPerMinute:0.0} food/min (average)\n" +
+            $"Upkeep: {colonyManager.UpkeepPerHour} food/hour ({colonyManager.Ants} ants, {colonyManager.LarvaCount} larvae)";
 
         eggLabel.Text = $"🥚 Eggs: {colonyManager.Egg}";
     }
@@ -126,5 +138,6 @@ public partial class ColonyUI : CanvasLayer
     {
         BuildingDef def = BuildingDefs.All[type];
         button.Text = $"{def.Name} ({def.FoodCostPerCell}/cell)";
+        button.TooltipText = $"{def.Description}\n\nCost: {def.FoodCostPerCell} food per cell.";
     }
 }

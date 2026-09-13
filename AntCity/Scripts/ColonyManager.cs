@@ -2,12 +2,16 @@ using Godot;
 
 public partial class ColonyManager : Node
 {
-    private const double ConsumptionIntervalSeconds = 5.0;
-    private const int FoodPerAntPerInterval = 1;
-    private const int FoodPerLarvaPerInterval = 1;
-    private const int StarvingIntervalsBeforeLoss = 4;
+    // Upkeep is charged once per in-game hour (see GameClock) rather than on a fast real-time tick,
+    // so a few minutes of not foraging doesn't wipe out an early colony.
+    private const int FoodPerAntPerHour = 2;
+    private const int FoodPerLarvaPerHour = 1;
+    private const int StarvingHoursBeforeLoss = 4;
 
-    public int Ants { get; private set; } = 1;
+    [Export]
+    public GameClock GameClock { get; set; }
+
+    public int Ants { get; private set; } = 0;
     public int Food { get; private set; } = 50;
     public int FoodCapacity { get; private set; } = 75;
     public int Egg { get; private set; } = 0;
@@ -18,8 +22,14 @@ public partial class ColonyManager : Node
     public int PopulationUsed => Ants + Egg + LarvaCount;
     public bool HasRoomForMorePopulation => PopulationUsed < Capacity;
 
+    // How much food upkeep currently costs the colony per in-game hour, for the food tooltip.
+    public int UpkeepPerHour => Ants * FoodPerAntPerHour + LarvaCount * FoodPerLarvaPerHour;
+
+    // Lifetime average food income, for the food tooltip's "generating per minute" figure.
+    public double FoodPerMinute => GameClock.ElapsedSeconds > 0 ? totalFoodEarned / GameClock.ElapsedSeconds * 60.0 : 0.0;
+
     private int nurseryCellTotal;
-    private double consumptionTimer;
+    private int totalFoodEarned;
     private int starvingIntervalStreak;
 
     // Fired whenever any colony value changes.
@@ -38,19 +48,8 @@ public partial class ColonyManager : Node
     public override void _Ready()
     {
         GD.Print("Colony Manager started!");
-    }
 
-    public override void _Process(double delta)
-    {
-        consumptionTimer += delta;
-
-        if (consumptionTimer < ConsumptionIntervalSeconds)
-        {
-            return;
-        }
-
-        consumptionTimer -= ConsumptionIntervalSeconds;
-        ConsumeUpkeep();
+        GameClock.HourElapsed += ConsumeUpkeep;
     }
 
     public int AddFood(int amount)
@@ -58,6 +57,7 @@ public partial class ColonyManager : Node
         int newFood = Mathf.Min(Food + amount, FoodCapacity);
         int actuallyAdded = newFood - Food;
         Food = newFood;
+        totalFoodEarned += actuallyAdded;
         EmitSignal(SignalName.ColonyChanged);
 
         return actuallyAdded;
@@ -162,7 +162,7 @@ public partial class ColonyManager : Node
 
     private void ConsumeUpkeep()
     {
-        int upkeep = Ants * FoodPerAntPerInterval + LarvaCount * FoodPerLarvaPerInterval;
+        int upkeep = UpkeepPerHour;
 
         if (upkeep <= 0)
         {
@@ -179,10 +179,10 @@ public partial class ColonyManager : Node
         {
             Food = 0;
             starvingIntervalStreak++;
-            GD.Print($"The colony is starving! ({starvingIntervalStreak} interval(s) with no food)");
+            GD.Print($"The colony is starving! ({starvingIntervalStreak} hour(s) with no food)");
             RaiseAlert("The colony is starving!");
 
-            if (starvingIntervalStreak >= StarvingIntervalsBeforeLoss && RemoveAnt())
+            if (starvingIntervalStreak >= StarvingHoursBeforeLoss && RemoveAnt())
             {
                 GD.Print("An ant has starved to death.");
                 RaiseAlert("An ant has starved to death.");
