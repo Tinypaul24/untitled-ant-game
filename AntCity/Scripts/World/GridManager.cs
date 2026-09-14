@@ -229,7 +229,7 @@ public partial class GridManager : Node2D
             GD.Print($"Tunneled through a food source at {cell}, destroying it. Forage it instead to collect its food.");
         }
 
-        EmitSignal(SignalName.CellDug, cell);
+        EmitSignal("CellDug", cell);
         EmitSignal(SignalName.TerrainChanged);
     }
 

@@ -326,9 +326,16 @@ public partial class GridManager : Node2D
     // Shortest walkable route from `start` to `goal` through already-dug tunnel cells, or null if unreachable.
     public List<Vector2I> FindTunnelPath(Vector2I start, Vector2I goal)
     {
+        const int MaxVisited = 6000;
+
         if (start == goal)
         {
             return new List<Vector2I> { start };
+        }
+
+        if (!IsStandable(goal))
+        {
+            return null;
         }
 
         var cameFrom = new Dictionary<Vector2I, Vector2I>();
@@ -336,7 +343,7 @@ public partial class GridManager : Node2D
         var frontier = new Queue<Vector2I>();
         frontier.Enqueue(start);
 
-        while (frontier.Count > 0)
+        while (frontier.Count > 0 && visited.Count < MaxVisited)
         {
             Vector2I current = frontier.Dequeue();
 

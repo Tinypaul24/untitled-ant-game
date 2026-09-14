@@ -145,7 +145,8 @@ public partial class AntWorker : Area2D
         StopCurrentTask();
 
         Vector2I startCell = gridManager.WorldToCell(Position);
-        List<Vector2I> route = gridManager.FindTunnelPath(startCell, targetCell) ?? new List<Vector2I> { startCell };
+        Vector2I goalCell = gridManager.FindNearestTunnelCell(targetCell);
+        List<Vector2I> route = gridManager.FindTunnelPath(startCell, goalCell) ?? new List<Vector2I> { startCell };
 
         FollowPath(route, OnMoveComplete);
     }
