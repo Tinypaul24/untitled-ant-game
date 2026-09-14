@@ -36,6 +36,11 @@ public partial class ParticleField : Node2D
     [Export]
     public GridManager Grid { get; set; }
 
+    // Master switch for the whole soil simulation - excavated grains, carrying, hauling, spoil heaps.
+    // Off keeps the colony quick to play: digging just opens the cell. On restores conserved dirt.
+    [Export]
+    public bool Enabled { get; set; } = false;
+
     private readonly Dictionary<Vector2I, GridManager.TileType> settled = new();
     private readonly Dictionary<Vector2I, int> settledPerCell = new();
     private readonly List<Grain> falling = new();
@@ -54,6 +59,11 @@ public partial class ParticleField : Node2D
 
     public override void _Process(double delta)
     {
+        if (!Enabled)
+        {
+            return;
+        }
+
         tickAccumulator += delta;
 
         for (int step = 0; step < MaxStepsPerFrame && tickAccumulator >= TickSeconds; step++)
@@ -243,7 +253,7 @@ public partial class ParticleField : Node2D
         settledPerCell[cell] = count;
 
         // The dump is where ants stand to unload, so it never packs shut under them.
-        if (count >= SlotsPerCell && cell != Grid.SpoilDumpCell)
+        if (count >= SlotsPerCell)
         {
             PackCell(cell);
         }

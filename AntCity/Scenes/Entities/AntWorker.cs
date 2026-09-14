@@ -28,8 +28,9 @@ public partial class AntWorker : Area2D
     // Each dig tick scrapes out a share of the cell; a full load is three cells worth, matching the old haul cadence.
     private const int GrainsPerDigTick = ParticleField.SlotsPerCell / GridManager.GrainsPerCell;
     private const int HaulCapacityGrains = ParticleField.SlotsPerCell * 3;
-    private const int MaxCarriedSpecksDrawn = 10;
-    private const int CarriedSpecksPerRow = 4;
+    private const int MaxCarriedSpecksDrawn = 6;
+    private const int CarriedSpecksPerRow = 3;
+    private const float MouthOffset = 6f;
     private const float CarriedSpeckSize = 2f;
 
     private static readonly Color SelectionRingColor = new Color(1f, 1f, 0.4f);
@@ -54,6 +55,7 @@ public partial class AntWorker : Area2D
     private bool isSelected;
     private Vector2 wanderHome;
     private Vector2 moveTarget;
+    private Vector2 facing = Vector2.Down;
     private Queue<Vector2I> pendingPath = new Queue<Vector2I>();
     private Action onPathComplete;
     private Vector2I digTarget;
@@ -188,6 +190,9 @@ public partial class AntWorker : Area2D
 
     // The load she is actually carrying, heaped on her back. Without this a haul reads as the dirt
     // vanishing at the dig face and reappearing on the pile.
+    // The load clamped in her mandibles, out in front of whichever way she is facing. Ants carry
+    // spoil in their jaws, and putting it there rather than on her back makes a hauler readable as
+    // a hauler from across the screen.
     private void DrawCarriedGrains()
     {
         if (carriedGrains.Count == 0)
@@ -201,15 +206,19 @@ public partial class AntWorker : Area2D
             MaxCarriedSpecksDrawn
         );
 
+        Vector2 mouth = facing * MouthOffset;
+        Vector2 across = new Vector2(-facing.Y, facing.X);
+
         for (int i = 0; i < specks; i++)
         {
             int row = i / CarriedSpecksPerRow;
             int column = i % CarriedSpecksPerRow;
 
-            Vector2 offset = new Vector2(
-                (column - (CarriedSpecksPerRow - 1) / 2f) * CarriedSpeckSize + row * CarriedSpeckSize / 2f,
-                -SelectionRingRadius - CarriedSpeckSize - row * CarriedSpeckSize
-            );
+            // The bundle sits across her jaws and grows outward from them as the load gets heavier.
+            Vector2 offset = mouth
+                + across * ((column - (CarriedSpecksPerRow - 1) / 2f) * CarriedSpeckSize)
+                + facing * (row * CarriedSpeckSize)
+                - new Vector2(CarriedSpeckSize, CarriedSpeckSize) / 2f;
 
             // Sample across the load so a mixed haul shows the materials it is actually made of.
             Color color = ParticleField.ColorFor(carriedGrains[i * carriedGrains.Count / specks]);
@@ -441,16 +450,21 @@ public partial class AntWorker : Area2D
 
         bool cellOpened = gridManager.DigGrain(pendingDigCell);
 
-        // The scraped-out material tumbles onto the floor at her feet. Anything with nowhere to land
-        // (she is walled in, or the floor is already heaped up) goes straight onto her back instead.
-        int spilled = particleField.Emit(standingCell, GrainsPerDigTick, material);
-
-        for (int i = spilled; i < GrainsPerDigTick && carriedGrains.Count < HaulCapacityGrains; i++)
+        // Loose soil only exists while the dirt simulation is switched on. With it off, a dig simply
+        // opens the cell and there is nothing to carry, so no hauling trips happen at all.
+        if (particleField.Enabled)
         {
-            carriedGrains.Add(material);
-        }
+            // The scraped-out material tumbles onto the floor at her feet. Anything with nowhere to
+            // land (she is walled in, or the floor is already heaped up) goes onto her back instead.
+            int spilled = particleField.Emit(standingCell, GrainsPerDigTick, material);
 
-        QueueRedraw();
+            for (int i = spilled; i < GrainsPerDigTick && carriedGrains.Count < HaulCapacityGrains; i++)
+            {
+                carriedGrains.Add(material);
+            }
+
+            QueueRedraw();
+        }
 
         // The wall is still standing - keep chipping at the same cell, unless this load is full.
         if (!cellOpened)
@@ -509,17 +523,18 @@ public partial class AntWorker : Area2D
     private void HaulGrainsThen(Action afterDump)
     {
         Vector2I current = gridManager.WorldToCell(Position);
-        List<Vector2I> route = gridManager.FindTunnelPath(current, gridManager.SpoilDumpCell) ?? new List<Vector2I> { current };
+        Vector2I dropOff = gridManager.FindSpoilDropOff(current);
+        List<Vector2I> route = gridManager.FindTunnelPath(current, dropOff) ?? new List<Vector2I> { current };
 
         FollowPath(route, () =>
         {
             Vector2I arrived = gridManager.WorldToCell(Position);
 
-            // Only tip onto the pile if she actually reached the dump. If the route failed she never
-            // went anywhere, and the load has to go down at her feet rather than across the map.
-            bool atDump = GridManager.IsWithinReach(arrived, gridManager.SpoilDumpCell);
+            // Tip it out beside her, on the side away from the nest, so the heap builds outward
+            // instead of burying the hauler or growing back across the way she came in.
+            int awayFromNest = arrived.X < gridManager.NestCenterCell.X ? -1 : 1;
 
-            particleField.Release(atDump ? gridManager.SpoilPileCell : arrived, carriedGrains);
+            particleField.Release(arrived + new Vector2I(awayFromNest, 0), carriedGrains);
             QueueRedraw();
             afterDump();
         });
@@ -694,9 +709,28 @@ public partial class AntWorker : Area2D
 
     private void UpdateFacing(Vector2 direction)
     {
-        sprite.Texture = Mathf.Abs(direction.X) > Mathf.Abs(direction.Y)
+        bool horizontal = Mathf.Abs(direction.X) > Mathf.Abs(direction.Y);
+
+        sprite.Texture = horizontal
             ? (direction.X > 0 ? RightTexture : LeftTexture)
             : (direction.Y > 0 ? DownTexture : UpTexture);
+
+        Vector2 turned = horizontal
+            ? new Vector2(Mathf.Sign(direction.X), 0f)
+            : new Vector2(0f, Mathf.Sign(direction.Y));
+
+        if (turned == facing)
+        {
+            return;
+        }
+
+        facing = turned;
+
+        // Anything in her jaws has to swing round with her.
+        if (carriedGrains.Count > 0)
+        {
+            QueueRedraw();
+        }
     }
 
     private void OnInputEvent(Node viewport, InputEvent @event, long shapeIdx)

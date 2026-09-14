@@ -107,9 +107,11 @@ public partial class GridManager : Node2D
     [Export(PropertyHint.Range, "-1,1,0.01")]
     public float WaterThreshold { get; set; } = 0.55f;
 
-    // Roughly the fraction of surface tiles (that aren't water) that end up as trees.
+    // Trees are switched off for now. They block the one-tile-thick surface walkway outright, and an
+    // ant can stand on a treetop, which made spoil haulers pile their loads up in the canopy. Set
+    // this above zero to bring them back once they are proper multi-tile plants.
     [Export(PropertyHint.Range, "0,1,0.01")]
-    public float TreeChance { get; set; } = 0.12f;
+    public float TreeChance { get; set; } = 0f;
 
     private static readonly Vector2I[] Directions =
     {
@@ -361,11 +363,66 @@ public partial class GridManager : Node2D
         return new List<Vector2I>(foodRemaining.Keys);
     }
 
-    // Where ants stand to unload. Kept clear of packing so a hauler can never seal itself in.
-    public Vector2I SpoilDumpCell => new Vector2I(NestCenterCell.X + 5, SurfaceHeight - 1);
+    // Where a hauler should take her load.
+    //
+    // Spoil goes up and out, the way a real colony works it - never to one fixed spot. A fixed dump
+    // cell is unreachable from most dig faces once ants cannot climb, and a hauler who cannot route
+    // there just tips her load in the tunnel she is standing in. So instead she searches the burrow
+    // she can actually walk and picks the highest point in it, preferring one a few cells clear of
+    // the entrance so the heap never grows across her own way out.
+    public Vector2I FindSpoilDropOff(Vector2I from)
+    {
+        const int MaxVisited = 4000;
+        const int PreferredSpread = 6;
 
-    // The column beside the dump that hauled spoil actually piles up in.
-    public Vector2I SpoilPileCell => SpoilDumpCell + new Vector2I(1, 0);
+        Vector2I best = from;
+        int bestScore = SpoilDropScore(from, PreferredSpread);
+
+        var visited = new HashSet<Vector2I> { from };
+        var frontier = new Queue<Vector2I>();
+        frontier.Enqueue(from);
+
+        while (frontier.Count > 0 && visited.Count < MaxVisited)
+        {
+            Vector2I current = frontier.Dequeue();
+
+            foreach (Vector2I direction in MoveDirections)
+            {
+                Vector2I next = current + direction;
+
+                if (visited.Contains(next) || !IsStandable(next))
+                {
+                    continue;
+                }
+
+                visited.Add(next);
+                frontier.Enqueue(next);
+
+                int score = SpoilDropScore(next, PreferredSpread);
+
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    best = next;
+                }
+            }
+        }
+
+        return best;
+    }
+
+    // Lower is better. Getting out of the burrow is what matters, so every cell at or above the
+    // surface counts as equally good height-wise and the tie is broken by walking a few cells clear
+    // of the nest column - otherwise a hauler would trek across the map to reach one perch that
+    // happens to sit a single row higher.
+    private int SpoilDropScore(Vector2I cell, int preferredSpread)
+    {
+        int height = Mathf.Max(cell.Y, SurfaceHeight - 1);
+        int lateral = Mathf.Min(Mathf.Abs(cell.X - NestCenterCell.X), preferredSpread);
+
+        return height * 100 - lateral;
+    }
+
 
     public TileType GetTileAt(Vector2I cell)
     {
