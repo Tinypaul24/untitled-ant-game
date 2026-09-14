@@ -36,10 +36,15 @@ public partial class TerrainTests : Node
         Vector2I nest = grid.NestCenterCell;
 
         Check(grid.IsStandable(nest), "nest floor is standable");
-        Check(grid.IsStandable(grid.SpoilDumpCell), "spoil dump is standable");
+        // Spoil has no fixed home any more - a hauler searches the burrow she can walk and takes her
+        // load to the highest point in it, which should be out on the surface.
+        Vector2I dropOff = grid.FindSpoilDropOff(nest);
 
-        List<Vector2I> out_ = grid.FindTunnelPath(nest, grid.SpoilDumpCell);
-        List<Vector2I> back = grid.FindTunnelPath(grid.SpoilDumpCell, nest);
+        Check(grid.IsStandable(dropOff), "spoil drop-off is standable");
+        Check(dropOff.Y <= grid.SurfaceHeight - 1, "spoil drop-off is at or above the surface", $"landed at {dropOff}");
+
+        List<Vector2I> out_ = grid.FindTunnelPath(nest, dropOff);
+        List<Vector2I> back = grid.FindTunnelPath(dropOff, nest);
 
         Check(out_ != null, "nest reaches the surface");
         Check(back != null, "surface reaches the nest");
@@ -72,7 +77,19 @@ public partial class TerrainTests : Node
 
     private void PilesPackIntoSolidGround()
     {
-        Vector2I pile = grid.SpoilPileCell;
+        // The simulation ships switched off while the colony is being balanced, so switch it on for
+        // the duration - these tests are about whether it still works when it is on.
+        field.Enabled = true;
+
+        Vector2I dropOff = grid.FindSpoilDropOff(grid.NestCenterCell);
+
+        // Tip it beside her on the side away from the nest, exactly as a hauler does.
+        int awayFromNest = dropOff.X < grid.NestCenterCell.X ? -1 : 1;
+        Vector2I pile = dropOff + new Vector2I(awayFromNest, 0);
+
+        // Earlier tests leave grains of their own lying about, so measure the change rather than the
+        // total - what matters is that tipping a load on the surface adds nothing to the tunnels.
+        int undergroundBefore = CountUndergroundGrainsNear(pile);
         int fed = 0;
 
         for (int load = 0; load < 20; load++)
@@ -91,20 +108,50 @@ public partial class TerrainTests : Node
 
         int packed = 0;
 
-        for (int y = 0; y <= grid.SurfaceHeight; y++)
+        for (int y = 0; y < grid.SurfaceHeight; y++)
         {
-            for (int x = pile.X - 4; x <= pile.X + 4; x++)
+            for (int x = pile.X - 8; x <= pile.X + 8; x++)
             {
-                if (grid.GetTileAt(new Vector2I(x, y)) == GridManager.TileType.Dirt && y < grid.SurfaceHeight)
+                if (grid.GetTileAt(new Vector2I(x, y)) == GridManager.TileType.Dirt)
                 {
                     packed++;
                 }
             }
         }
 
+        int spilledUnderground = CountUndergroundGrainsNear(pile) - undergroundBefore;
+
         Check(packed > 0, "dumped spoil packs back into solid ground", $"{packed} cells packed from {fed} grains");
-        Check(grid.IsStandable(grid.SpoilDumpCell), "the dump never seals itself shut");
+        Check(spilledUnderground <= 0, "tipping a load adds no spoil to the tunnels", $"{spilledUnderground} grains went underground");
+        Check(grid.IsStandable(grid.FindSpoilDropOff(grid.NestCenterCell)), "a drop-off is still reachable after dumping");
     }
+
+    private int CountUndergroundGrainsNear(Vector2I pile)
+    {
+        int count = 0;
+
+        for (int y = grid.SurfaceHeight; y < grid.SurfaceHeight + 16; y++)
+        {
+            for (int x = pile.X - 8; x <= pile.X + 8; x++)
+            {
+                Vector2I origin = new Vector2I(x, y) * ParticleField.SlotsPerCellAxis;
+
+                for (int sx = 0; sx < ParticleField.SlotsPerCellAxis; sx++)
+                {
+                    for (int sy = 0; sy < ParticleField.SlotsPerCellAxis; sy++)
+                    {
+                        if (field.IsSettledSlot(origin + new Vector2I(sx, sy)))
+                        {
+                            count++;
+                        }
+                    }
+                }
+            }
+        }
+
+        return count;
+    }
+
 
     private void DugCorridorsStayWalkable()
     {
@@ -165,7 +212,7 @@ public partial class TerrainTests : Node
 
             Check(!grid.CanDig(target), $"dig to {offset} opens its target");
             Check(grid.IsStandable(cursor), $"digger at {offset} ends on solid footing");
-            Check(grid.FindTunnelPath(cursor, grid.SpoilDumpCell) != null, $"digger at {offset} can get home");
+            Check(grid.FindTunnelPath(cursor, grid.FindSpoilDropOff(cursor)) != null, $"digger at {offset} can get home");
         }
     }
 

@@ -48,6 +48,9 @@ public partial class ParticleField : Node2D
     public int SettledGrainCount => settled.Count;
     public int FallingGrainCount => falling.Count;
 
+    // Whether one lattice slot currently holds a grain at rest.
+    public bool IsSettledSlot(Vector2I slot) => settled.ContainsKey(slot);
+
     // Every slot held by a grain, settled or in flight. Keeps two falling grains from claiming the
     // same slot and quietly annihilating one another when they land.
     private readonly HashSet<Vector2I> occupied = new();
