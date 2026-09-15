@@ -67,7 +67,7 @@ public partial class GridManager : Node2D
     public float FoodThreshold { get; set; } = 0.62f;
 
     [Export]
-    public int FoodPerDeposit { get; set; } = 5;
+    public int FoodPerDeposit { get; set; } = 15;
 
     [Export]
     public int FoodPerTree { get; set; } = 3;
@@ -77,21 +77,21 @@ public partial class GridManager : Node2D
     public float SeedCacheChance { get; set; } = 0.016f;
 
     [Export]
-    public int FoodPerSeedCache { get; set; } = 20;
+    public int FoodPerSeedCache { get; set; } = 40;
 
     // Common, small payoff - the frequent little pickups.
     [Export(PropertyHint.Range, "0,1,0.01")]
     public float MushroomPatchChance { get; set; } = 0.06f;
 
     [Export]
-    public int FoodPerMushroomPatch { get; set; } = 2;
+    public int FoodPerMushroomPatch { get; set; } = 6;
 
     // Surface alternative to trees.
     [Export(PropertyHint.Range, "0,1,0.01")]
     public float BerryBushChance { get; set; } = 0.05f;
 
     [Export]
-    public int FoodPerBerryBush { get; set; } = 8;
+    public int FoodPerBerryBush { get; set; } = 20;
 
     [Export(PropertyHint.Range, "0,1,0.01")]
     public float WaterNoiseFrequency { get; set; } = 0.1f;
@@ -130,6 +130,9 @@ public partial class GridManager : Node2D
     public int ActiveSeed { get; private set; }
 
     private readonly Dictionary<Vector2I, int> foodRemaining = new();
+
+    // Food sources a worker is already on her way to, so foragers spread out instead of stacking up.
+    private readonly HashSet<Vector2I> claimedForageCells = new();
 
     // Solid cells are made of GrainsPerCell small pieces that ants chip out one at a time,
     // so a wall visibly crumbles instead of flipping to open tunnel in one step.
@@ -288,6 +291,50 @@ public partial class GridManager : Node2D
     public List<Vector2I> GetFoodSourceCells()
     {
         return new List<Vector2I>(foodRemaining.Keys);
+    }
+
+    // The nearest food source no other worker has already gone after.
+    //
+    // Reachability is deliberately not checked here. A forager tunnels toward buried food on her way
+    // to it, which is how a colony ends up mining out a deposit it found - so the only limit is how
+    // far afield she is willing to look.
+    public bool TryFindForageTarget(Vector2 fromPosition, float maxDistance, out Vector2I cell)
+    {
+        cell = default;
+
+        float bestDistance = maxDistance * maxDistance;
+        bool found = false;
+
+        foreach (KeyValuePair<Vector2I, int> entry in foodRemaining)
+        {
+            if (claimedForageCells.Contains(entry.Key) || !IsFoodSource(entry.Key))
+            {
+                continue;
+            }
+
+            float distance = CellToWorld(entry.Key).DistanceSquaredTo(fromPosition);
+
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                cell = entry.Key;
+                found = true;
+            }
+        }
+
+        return found;
+    }
+
+    // One worker per source: a deposit holds a load or two, so a second ant on it would just walk
+    // out there and find nothing left.
+    public void ClaimForageCell(Vector2I cell)
+    {
+        claimedForageCells.Add(cell);
+    }
+
+    public void ReleaseForageClaim(Vector2I cell)
+    {
+        claimedForageCells.Remove(cell);
     }
 
     // Where a hauler should take her load.

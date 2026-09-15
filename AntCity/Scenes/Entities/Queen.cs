@@ -6,7 +6,12 @@ public partial class Queen : Node2D
     private const float EggScatterRadius = 7f;
     private const int EggFoodCost = 2;
 
+    // How often she lays while the player has laying switched on. Delta-based, so pause and the
+    // speed controls govern it like everything else.
+    private const double LayIntervalSeconds = 12.0;
+
     private ColonyManager colonyManager;
+    private double layAccumulator;
 
     public override void _Ready()
     {
@@ -15,6 +20,26 @@ public partial class Queen : Node2D
         colonyManager = GetNode<ColonyManager>("../ColonyManager");
     }
 
+
+    public override void _Process(double delta)
+    {
+        if (!colonyManager.LayingEnabled)
+        {
+            return;
+        }
+
+        layAccumulator += delta;
+
+        if (layAccumulator < LayIntervalSeconds)
+        {
+            return;
+        }
+
+        // Reset either way. A blocked attempt - no food, no room - should not bank up and then
+        // burst out a clutch of eggs the moment the colony can afford one.
+        layAccumulator = 0;
+        LayEgg();
+    }
     public void LayEgg()
     {
         if (!colonyManager.HasRoomForMorePopulation)

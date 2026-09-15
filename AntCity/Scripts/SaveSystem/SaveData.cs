@@ -71,6 +71,7 @@ public class ColonySave
     public int NurseryCellTotal { get; set; }
     public int TotalFoodEarned { get; set; }
     public int StarvingIntervalStreak { get; set; }
+    public bool LayingEnabled { get; set; }
 }
 
 public class ClockSave
