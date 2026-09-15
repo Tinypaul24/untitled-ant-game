@@ -27,6 +27,7 @@ public partial class TerrainTests : Node
         GrainsAreConserved();
         PilesPackIntoSolidGround();
         DugCorridorsStayWalkable();
+        SaveRoundTripRebuildsTheWorld();
 
         GD.Print($"--- {passed} passed, {failed} failed ---");
     }
@@ -214,6 +215,83 @@ public partial class TerrainTests : Node
             Check(grid.IsStandable(cursor), $"digger at {offset} ends on solid footing");
             Check(grid.FindTunnelPath(cursor, grid.FindSpoilDropOff(cursor)) != null, $"digger at {offset} can get home");
         }
+    }
+
+    private void SaveRoundTripRebuildsTheWorld()
+    {
+        Vector2I nest = grid.NestCenterCell;
+
+        for (int dx = -6; dx <= 6; dx++)
+        {
+            Vector2I target = FindDiggableNear(nest + new Vector2I(dx, 2));
+            grid.Dig(target);
+            grid.DigGrain(FindDiggableNear(nest + new Vector2I(dx, 3)));
+        }
+
+        foreach (Vector2I foodCell in grid.GetFoodSourceCells())
+        {
+            grid.Harvest(foodCell, 1);
+            break;
+        }
+
+        var expectedTiles = new Dictionary<Vector2I, GridManager.TileType>();
+        var expectedGrains = new Dictionary<Vector2I, int>();
+
+        for (int x = nest.X - 40; x <= nest.X + 40; x++)
+        {
+            for (int y = 0; y <= nest.Y + 20; y++)
+            {
+                var cell = new Vector2I(x, y);
+                expectedTiles[cell] = grid.GetTileAt(cell);
+                expectedGrains[cell] = grid.GetGrainsRemoved(cell);
+            }
+        }
+
+        var expectedFood = new Dictionary<Vector2I, int>();
+
+        foreach (Vector2I cell in grid.GetFoodSourceCells())
+        {
+            expectedFood[cell] = grid.GetFoodAmount(cell);
+        }
+
+        WorldSave save = grid.CaptureState();
+        grid.RestoreState(save);
+
+        int wrongTiles = 0;
+        int wrongGrains = 0;
+
+        foreach (var entry in expectedTiles)
+        {
+            if (grid.GetTileAt(entry.Key) != entry.Value)
+            {
+                wrongTiles++;
+            }
+
+            if (grid.GetGrainsRemoved(entry.Key) != expectedGrains[entry.Key])
+            {
+                wrongGrains++;
+            }
+        }
+
+        int wrongFood = 0;
+
+        foreach (var entry in expectedFood)
+        {
+            if (grid.GetFoodAmount(entry.Key) != entry.Value)
+            {
+                wrongFood++;
+            }
+        }
+
+        Check(wrongTiles == 0, "every tile survives a save and reload", $"({wrongTiles} of {expectedTiles.Count} differ)");
+        Check(wrongGrains == 0, "part-dug cells keep their progress", $"({wrongGrains} differ)");
+        Check(wrongFood == 0, "food sources keep what is left in them", $"({wrongFood} of {expectedFood.Count} differ)");
+        Check(grid.GetFoodSourceCells().Count == expectedFood.Count, "no food source is invented or lost");
+
+        WorldSave resaved = grid.CaptureState();
+        Check(resaved.Seed == save.Seed, "the reloaded world keeps its seed");
+        Check(resaved.ModifiedCells.Count == save.ModifiedCells.Count, "a reloaded world re-saves the same changes",
+            $"({save.ModifiedCells.Count / 3} before, {resaved.ModifiedCells.Count / 3} after)");
     }
 
     private Vector2I FindDiggableNear(Vector2I wanted)

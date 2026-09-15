@@ -79,6 +79,11 @@ public partial class SelectionManager : Node2D
         }
     }
 
+    public void ClearAll()
+    {
+        ClearSelection();
+    }
+
     private void HandleMouseButton(InputEventMouseButton mouseButton)
     {
         // BuildManager owns input entirely while a building is being placed.

@@ -2,11 +2,15 @@
 
 [ext_resource type="PackedScene" uid="uid://ol27lhw3uccj" path="res://AntCity/Scenes/Main.tscn" id="1_main"]
 [ext_resource type="Script" path="res://AntCity/Scripts/TerrainTests.cs" id="2_tests"]
+[ext_resource type="Script" path="res://AntCity/Scripts/SaveLoadTests.cs" id="3_saveload"]
 
 [node name="Tests" type="Node"]
 script = ExtResource("2_tests")
 
 [node name="Main" parent="." instance=ExtResource("1_main")]
+
+[node name="SaveLoadTests" type="Node" parent="."]
+script = ExtResource("3_saveload")
 
 [editable path="Main"]
 

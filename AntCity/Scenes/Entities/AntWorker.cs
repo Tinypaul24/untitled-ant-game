@@ -59,6 +59,7 @@ public partial class AntWorker : Area2D
     private Queue<Vector2I> pendingPath = new Queue<Vector2I>();
     private Action onPathComplete;
     private Vector2I digTarget;
+    private bool hasDigJob;
     private Vector2I pendingDigCell;
     private Action pendingDigCallback;
     private Vector2I? forageTarget;
@@ -179,6 +180,76 @@ public partial class AntWorker : Area2D
         QueueRedraw();
     }
 
+    public AntSave CaptureState()
+    {
+        var save = new AntSave
+        {
+            X = Position.X,
+            Y = Position.Y,
+            Selected = isSelected,
+            CarriedFood = carriedFood,
+            HasDigJob = hasDigJob,
+            DigTargetX = digTarget.X,
+            DigTargetY = digTarget.Y,
+            HasForageTarget = forageTarget.HasValue,
+            ForageTargetX = forageTarget?.X ?? 0,
+            ForageTargetY = forageTarget?.Y ?? 0,
+        };
+
+        foreach (GridManager.TileType material in carriedGrains)
+        {
+            save.CarriedGrains.Add((int)material);
+        }
+
+        return save;
+    }
+
+    public void RestoreState(AntSave save)
+    {
+        Position = new Vector2(save.X, save.Y);
+        moveTarget = Position;
+        wanderHome = Position;
+
+        AbandonCurrentJob();
+        StopCurrentTask();
+        wanderTimer.Stop();
+        pendingPath.Clear();
+        plannedDigRoute.Clear();
+        onPathComplete = null;
+        state = State.Idle;
+
+        var forageTargetCell = new Vector2I(save.ForageTargetX, save.ForageTargetY);
+        var digTargetCell = new Vector2I(save.DigTargetX, save.DigTargetY);
+
+        if (save.HasForageTarget && gridManager.IsFoodSource(forageTargetCell))
+        {
+            CommandForage(forageTargetCell);
+        }
+        else if (save.HasDigJob && gridManager.CanDig(digTargetCell))
+        {
+            CommandDig(digTargetCell);
+        }
+        else
+        {
+            GoIdle();
+        }
+
+        carriedFood = save.CarriedFood;
+        carriedGrains.Clear();
+
+        foreach (int material in save.CarriedGrains)
+        {
+            carriedGrains.Add((GridManager.TileType)material);
+        }
+
+        if (save.Selected)
+        {
+            selectionManager.ToggleSelect(this);
+        }
+
+        QueueRedraw();
+    }
+
     public override void _Draw()
     {
         DrawCarriedGrains();
@@ -235,6 +306,7 @@ public partial class AntWorker : Area2D
         StopCurrentTask();
 
         digTarget = targetCell;
+        hasDigJob = true;
         plannedDigRoute.Clear();
 
         Vector2I startCell = gridManager.WorldToCell(Position);
@@ -271,6 +343,7 @@ public partial class AntWorker : Area2D
         DropCarriedGrains();
 
         forageTarget = null;
+        hasDigJob = false;
     }
 
     // Release whatever job-board work is in flight so a manual command doesn't leave it stuck claimed forever.
@@ -399,6 +472,7 @@ public partial class AntWorker : Area2D
         if (!gridManager.CanDig(digTarget))
         {
             claimedJobCell = null;
+            hasDigJob = false;
 
             if (carriedGrains.Count > 0)
             {

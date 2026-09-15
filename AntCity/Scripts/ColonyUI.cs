@@ -127,6 +127,18 @@ public partial class ColonyUI : CanvasLayer
         eggLabel.Text = $"🥚 Eggs: {colonyManager.Egg}";
     }
 
+    public float CurrentSpeed => currentSpeed;
+
+    public bool IsPaused => pauseButton.ButtonPressed;
+
+    public void RestoreSpeed(float speed, bool paused)
+    {
+        currentSpeed = speed;
+        pauseButton.SetPressedNoSignal(paused);
+        pauseButton.Text = paused ? "▶" : "⏸";
+        Engine.TimeScale = paused ? 0f : speed;
+    }
+
     private void SetSpeed(float scale)
     {
         currentSpeed = scale;

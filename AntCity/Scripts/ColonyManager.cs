@@ -160,6 +160,38 @@ public partial class ColonyManager : Node
         EmitSignal(SignalName.ColonyChanged);
     }
 
+    public ColonySave CaptureState()
+    {
+        return new ColonySave
+        {
+            Ants = Ants,
+            Food = Food,
+            FoodCapacity = FoodCapacity,
+            Eggs = Egg,
+            Larvae = LarvaCount,
+            Capacity = Capacity,
+            NurseryCellTotal = nurseryCellTotal,
+            TotalFoodEarned = totalFoodEarned,
+            StarvingIntervalStreak = starvingIntervalStreak,
+        };
+    }
+
+    public void RestoreState(ColonySave save)
+    {
+        Ants = save.Ants;
+        Food = save.Food;
+        FoodCapacity = save.FoodCapacity;
+        Egg = save.Eggs;
+        LarvaCount = save.Larvae;
+        Capacity = save.Capacity;
+        nurseryCellTotal = save.NurseryCellTotal;
+        totalFoodEarned = save.TotalFoodEarned;
+        starvingIntervalStreak = save.StarvingIntervalStreak;
+        HatchSpeedMultiplier = Mathf.Pow(0.95f, nurseryCellTotal);
+
+        EmitSignal(SignalName.ColonyChanged);
+    }
+
     private void ConsumeUpkeep()
     {
         int upkeep = UpkeepPerHour;

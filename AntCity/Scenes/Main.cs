@@ -10,6 +10,8 @@ public partial class Main : Node2D
     {
         GD.Print("Ant City has started!");
 
+        AddChild(new SaveManager { Name = "SaveManager" });
+
         GridManager gridManager = GetNode<GridManager>("GridManager");
         Camera2D camera = GetNode<Camera2D>("Camera2D");
         Node2D queen = GetNode<Node2D>("Queen");

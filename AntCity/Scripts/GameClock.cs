@@ -24,6 +24,17 @@ public partial class GameClock : Node
         }
     }
 
+    public ClockSave CaptureState()
+    {
+        return new ClockSave { ElapsedSeconds = ElapsedSeconds, ElapsedHours = ElapsedHours };
+    }
+
+    public void RestoreState(ClockSave save)
+    {
+        ElapsedSeconds = save.ElapsedSeconds;
+        ElapsedHours = save.ElapsedHours;
+    }
+
     public string GetFormattedTime()
     {
         double secondsIntoHour = ElapsedSeconds % SecondsPerGameHour;
