@@ -166,9 +166,11 @@ grow_vertical = 0
 layout_mode = 2
 theme_override_constants/separation = 20
 
-[node name="LayEggButton" type="Button" parent="UI/ThemeRoot/BottomBar/Actions" unique_id=1288401762]
+[node name="LayingButton" type="Button" parent="UI/ThemeRoot/BottomBar/Actions" unique_id=1288401762]
 layout_mode = 2
-text = "Lay Egg"
+tooltip_text = "While on, the Queen lays eggs as food and space allow. Every new ant adds upkeep, so switch it off to bank food."
+toggle_mode = true
+text = "🥚 Laying: off"
 
 [node name="BuildButton" type="Button" parent="UI/ThemeRoot/BottomBar/Actions"]
 layout_mode = 2

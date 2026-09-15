@@ -19,6 +19,10 @@ public partial class ColonyManager : Node
     public int Capacity { get; private set; } = 10;
     public float HatchSpeedMultiplier { get; private set; } = 1f;
 
+    // Whether the Queen is currently allowed to lay. The player owns this decision - growth costs
+    // food and every new ant raises upkeep, so when the colony expands is theirs to choose.
+    public bool LayingEnabled { get; private set; }
+
     public int PopulationUsed => Ants + Egg + LarvaCount;
     public bool HasRoomForMorePopulation => PopulationUsed < Capacity;
 
@@ -146,6 +150,17 @@ public partial class ColonyManager : Node
         return true;
     }
 
+
+    public void SetLaying(bool enabled)
+    {
+        if (LayingEnabled == enabled)
+        {
+            return;
+        }
+
+        LayingEnabled = enabled;
+        EmitSignal(SignalName.ColonyChanged);
+    }
     public void IncreaseCapacity(int amount)
     {
         Capacity += amount;
@@ -173,6 +188,7 @@ public partial class ColonyManager : Node
             NurseryCellTotal = nurseryCellTotal,
             TotalFoodEarned = totalFoodEarned,
             StarvingIntervalStreak = starvingIntervalStreak,
+            LayingEnabled = LayingEnabled,
         };
     }
 
@@ -187,6 +203,7 @@ public partial class ColonyManager : Node
         nurseryCellTotal = save.NurseryCellTotal;
         totalFoodEarned = save.TotalFoodEarned;
         starvingIntervalStreak = save.StarvingIntervalStreak;
+        LayingEnabled = save.LayingEnabled;
         HatchSpeedMultiplier = Mathf.Pow(0.95f, nurseryCellTotal);
 
         EmitSignal(SignalName.ColonyChanged);

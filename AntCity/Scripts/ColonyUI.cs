@@ -12,7 +12,7 @@ public partial class ColonyUI : CanvasLayer
     private Label foodLabel;
     private ProgressBar foodBar;
     private Label eggLabel;
-    private Button layEggButton;
+    private Button layingButton;
     private Label clockLabel;
 
     private Button pauseButton;
@@ -34,7 +34,6 @@ public partial class ColonyUI : CanvasLayer
     private Tween toastTween;
 
     private ColonyManager colonyManager;
-    private Queen queen;
     private GameClock gameClock;
     private BuildManager buildManager;
 
@@ -51,7 +50,7 @@ public partial class ColonyUI : CanvasLayer
         // Static explainer tooltips - the food block's is refreshed in UpdateUI() since it shows live rates.
         populationBlock.TooltipText = "Population capacity for ants, eggs, and larvae combined. Build Nesting Chambers to raise it.";
         eggLabel.TooltipText = "Eggs the Queen has laid. Each one hatches into a larva, which then matures into a worker ant.";
-        layEggButton = GetNode<Button>("ThemeRoot/BottomBar/Actions/LayEggButton");
+        layingButton = GetNode<Button>("ThemeRoot/BottomBar/Actions/LayingButton");
         clockLabel = GetNode<Label>("ThemeRoot/ClockLabel");
 
         pauseButton = GetNode<Button>("ThemeRoot/SpeedPanel/SpeedButtons/PauseButton");
@@ -70,7 +69,6 @@ public partial class ColonyUI : CanvasLayer
         toastLabel = GetNode<Label>("ThemeRoot/ToastPanel/ToastLabel");
 
         colonyManager = GetNode<ColonyManager>("../ColonyManager");
-        queen = GetNode<Queen>("../Queen");
         gameClock = GetNode<GameClock>("../GameClock");
         buildManager = GetNode<BuildManager>("../BuildManager");
 
@@ -78,8 +76,8 @@ public partial class ColonyUI : CanvasLayer
         colonyManager.ColonyChanged += UpdateUI;
         colonyManager.Alert += ShowToast;
 
-        // Lay an egg when the button is pressed.
-        layEggButton.Pressed += queen.LayEgg;
+        // The player owns when the colony grows; the Queen just acts on the switch.
+        layingButton.Toggled += colonyManager.SetLaying;
 
         // Speed controls scale Engine.TimeScale directly, which every delta-based system (movement,
         // dig/forage/build timers, upkeep, the clock) already reads from - nothing else needs to know.
@@ -125,6 +123,10 @@ public partial class ColonyUI : CanvasLayer
             $"Upkeep: {colonyManager.UpkeepPerHour} food/hour ({colonyManager.Ants} ants, {colonyManager.LarvaCount} larvae)";
 
         eggLabel.Text = $"🥚 Eggs: {colonyManager.Egg}";
+
+        // Reflect the switch, including after a load restores it.
+        layingButton.SetPressedNoSignal(colonyManager.LayingEnabled);
+        layingButton.Text = colonyManager.LayingEnabled ? "🥚 Laying: on" : "🥚 Laying: off";
     }
 
     public float CurrentSpeed => currentSpeed;

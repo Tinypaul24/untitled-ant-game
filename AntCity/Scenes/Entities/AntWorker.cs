@@ -23,8 +23,10 @@ public partial class AntWorker : Area2D
     private const double MaxWanderPause = 3.0;
     private const float SelectionRingRadius = 6f;
     private const float ForageSeconds = 1f;
-    private const int ForageCarryCapacity = 5;
-    private const int HarvestPerTick = 1;
+    private const int ForageCarryCapacity = 10;
+    private const int HarvestPerTick = 2;
+    // How far afield an idle worker will look for something to forage, in world units.
+    private const float ForageSearchRadius = 24f * 16f;
     // Each dig tick scrapes out a share of the cell; a full load is three cells worth, matching the old haul cadence.
     private const int GrainsPerDigTick = ParticleField.SlotsPerCell / GridManager.GrainsPerCell;
     private const int HaulCapacityGrains = ParticleField.SlotsPerCell * 3;
@@ -165,7 +167,9 @@ public partial class AntWorker : Area2D
         AbandonCurrentJob();
         StopCurrentTask();
 
+        plannedDigRoute.Clear();
         forageTarget = targetCell;
+        gridManager.ClaimForageCell(targetCell);
 
         Vector2I startCell = gridManager.WorldToCell(Position);
         Vector2I nearestTunnel = gridManager.FindNearestTunnelCell(targetCell);
@@ -342,7 +346,7 @@ public partial class AntWorker : Area2D
         // material came out of the ground, so it has to end up somewhere.
         DropCarriedGrains();
 
-        forageTarget = null;
+        ReleaseForageTarget();
         hasDigJob = false;
     }
 
@@ -375,6 +379,14 @@ public partial class AntWorker : Area2D
         {
             claimedJobCell = cell;
             IssueDigCommand(cell, cell);
+            return;
+        }
+
+        // Food is the one thing the colony always needs, and nobody else is going to fetch it. An idle
+        // worker goes looking rather than milling about, which is what lets the colony feed itself.
+        if (gridManager.TryFindForageTarget(Position, ForageSearchRadius, out Vector2I food))
+        {
+            CommandForage(food);
             return;
         }
 
@@ -662,7 +674,9 @@ public partial class AntWorker : Area2D
         Vector2I target = forageTarget!.Value;
         Vector2I current = gridManager.WorldToCell(Position);
 
-        if (IsAdjacent(current, target))
+        // Within reach counts diagonally, matching where the route planner leaves her - she harvests
+        // from beside the source and never digs it out, since tunnelling through food destroys it.
+        if (GridManager.IsWithinReach(current, target))
         {
             if (carriedGrains.Count > 0)
             {
@@ -670,13 +684,52 @@ public partial class AntWorker : Area2D
                 return;
             }
 
+            plannedDigRoute.Clear();
             state = State.Foraging;
             forageTimer.Start();
             return;
         }
 
-        StepOrDig(target, ApproachForageTarget);
+        // Buried food needs the same planned corridor that ordinary digging uses. Stepping greedily
+        // cannot descend - the router refuses to undercut open ground - so a forager sent at a
+        // deposit below her would pace sideways forever instead of digging down to it.
+        if (plannedDigRoute.Count == 0)
+        {
+            List<Vector2I> plan = gridManager.PlanDigRoute(current, target);
+
+            if (plan == null)
+            {
+                GiveUpOnForageTarget();
+                return;
+            }
+
+            plannedDigRoute = new Queue<Vector2I>(plan);
+        }
+
+        while (plannedDigRoute.Count > 0 && plannedDigRoute.Peek() == current)
+        {
+            plannedDigRoute.Dequeue();
+        }
+
+        if (plannedDigRoute.Count == 0)
+        {
+            // Walked the whole corridor and still not beside it - the source is not actually
+            // approachable, so hand it back rather than looping on it.
+            GiveUpOnForageTarget();
+            return;
+        }
+
+        StepOrDig(plannedDigRoute.Dequeue(), ApproachForageTarget);
     }
+
+    private void GiveUpOnForageTarget()
+    {
+        plannedDigRoute.Clear();
+        ReleaseForageTarget();
+        wanderHome = Position;
+        GoIdle();
+    }
+
 
     private void OnForageTimeout()
     {
@@ -727,9 +780,19 @@ public partial class AntWorker : Area2D
             return;
         }
 
-        forageTarget = null;
+        ReleaseForageTarget();
         wanderHome = Position;
         GoIdle();
+    }
+
+    // Letting go of a source hands it back to the job board, so the next idle worker can take it on.
+    private void ReleaseForageTarget()
+    {
+        if (forageTarget.HasValue)
+        {
+            gridManager.ReleaseForageClaim(forageTarget.Value);
+            forageTarget = null;
+        }
     }
 
     private static bool IsAdjacent(Vector2I a, Vector2I b)
