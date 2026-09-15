@@ -59,6 +59,17 @@ public partial class Room : Node2D
         QueueRedraw();
     }
 
+    public void RestoreState(int gridCellSize, HashSet<Vector2I> remainingDigCells, RoomState restoredState, bool furnishClaimed)
+    {
+        cellSize = gridCellSize;
+        pendingDigCells = remainingDigCells;
+        State = restoredState;
+        FurnishClaimed = furnishClaimed;
+        Position = new Vector2(Footprint.Position.X * cellSize, Footprint.Position.Y * cellSize);
+
+        QueueRedraw();
+    }
+
     public void NotifyCellDug(Vector2I cell)
     {
         pendingDigCells.Remove(cell);

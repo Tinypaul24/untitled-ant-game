@@ -11,6 +11,10 @@ public partial class Larva : Node2D
     private ColonyManager colonyManager;
     private Timer matureTimer;
 
+    public double RestoreSecondsLeft { get; set; }
+
+    public double SecondsLeft => matureTimer.TimeLeft;
+
     public override void _Ready()
     {
         colonyManager = GetNode<ColonyManager>("../ColonyManager");
@@ -18,7 +22,9 @@ public partial class Larva : Node2D
 
         matureTimer = GetNode<Timer>("MatureTimer");
         matureTimer.OneShot = true;
-        matureTimer.WaitTime = GD.RandRange(MinMatureSeconds, MaxMatureSeconds) * colonyManager.HatchSpeedMultiplier;
+        matureTimer.WaitTime = RestoreSecondsLeft > 0
+            ? RestoreSecondsLeft
+            : GD.RandRange(MinMatureSeconds, MaxMatureSeconds) * colonyManager.HatchSpeedMultiplier;
         matureTimer.Timeout += Mature;
         matureTimer.Start();
     }

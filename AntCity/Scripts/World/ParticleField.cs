@@ -218,6 +218,48 @@ public partial class ParticleField : Node2D
         dirty = true;
     }
 
+    public ParticleSave CaptureState()
+    {
+        var save = new ParticleSave();
+
+        foreach (var entry in settled)
+        {
+            save.Settled.AddCell(entry.Key, (int)entry.Value);
+        }
+
+        foreach (Grain grain in falling)
+        {
+            save.Falling.AddCell(grain.Slot, (int)grain.Material);
+        }
+
+        return save;
+    }
+
+    public void RestoreState(ParticleSave save)
+    {
+        settled.Clear();
+        settledPerCell.Clear();
+        falling.Clear();
+        occupied.Clear();
+
+        foreach ((Vector2I slot, int material) in save.Settled.ReadCellValues())
+        {
+            settled[slot] = (GridManager.TileType)material;
+            occupied.Add(slot);
+
+            Vector2I cell = SlotToCell(slot);
+            settledPerCell[cell] = settledPerCell.TryGetValue(cell, out int existing) ? existing + 1 : 1;
+        }
+
+        foreach ((Vector2I slot, int material) in save.Falling.ReadCellValues())
+        {
+            falling.Add(new Grain { Slot = slot, Material = (GridManager.TileType)material });
+            occupied.Add(slot);
+        }
+
+        QueueRedraw();
+    }
+
     private bool TryFall(ref Grain grain)
     {
         Vector2I below = grain.Slot + new Vector2I(0, 1);

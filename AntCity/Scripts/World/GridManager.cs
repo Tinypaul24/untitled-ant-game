@@ -123,6 +123,12 @@ public partial class GridManager : Node2D
     private readonly Dictionary<Vector2I, TileType> grid = new();
     private readonly HashSet<Vector2I> generatedChunks = new();
 
+    private readonly HashSet<Vector2I> modifiedCells = new();
+
+    private bool isGenerating;
+
+    public int ActiveSeed { get; private set; }
+
     private readonly Dictionary<Vector2I, int> foodRemaining = new();
 
     // Solid cells are made of GrainsPerCell small pieces that ants chip out one at a time,
@@ -412,7 +418,12 @@ public partial class GridManager : Node2D
         GD.Randomize();
 
         // 0 means "no seed was set" -> roll a random one so every run gets a different world.
-        int actualSeed = Seed != 0 ? Seed : (int)GD.Randi();
+        InitializeNoise(Seed != 0 ? Seed : (int)GD.Randi());
+    }
+
+    private void InitializeNoise(int actualSeed)
+    {
+        ActiveSeed = actualSeed;
         GD.Print($"World seed: {actualSeed}");
 
         rockNoise = new FastNoiseLite { Seed = actualSeed, Frequency = RockNoiseFrequency };
@@ -538,7 +549,9 @@ public partial class GridManager : Node2D
                 break;
         }
 
+        isGenerating = true;
         SetTile(cell, type);
+        isGenerating = false;
     }
 
     private static float RollChance(int x, int y, int salt)
@@ -567,6 +580,11 @@ public partial class GridManager : Node2D
     private void SetTile(Vector2I cell, TileType type)
     {
         grid[cell] = type;
+
+        if (!isGenerating)
+        {
+            modifiedCells.Add(cell);
+        }
 
         if (type == TileType.Air)
         {

@@ -8,14 +8,21 @@ public partial class Egg : Node2D
     private static readonly PackedScene LarvaScene = GD.Load<PackedScene>("res://AntCity/Scenes/Entities/Larva.tscn");
 
     private ColonyManager colonyManager;
+    private Timer hatchTimer;
+
+    public double RestoreSecondsLeft { get; set; }
+
+    public double SecondsLeft => hatchTimer.TimeLeft;
 
     public override void _Ready()
     {
         colonyManager = GetNode<ColonyManager>("../ColonyManager");
 
-        Timer hatchTimer = GetNode<Timer>("HatchTimer");
+        hatchTimer = GetNode<Timer>("HatchTimer");
         hatchTimer.OneShot = true;
-        hatchTimer.WaitTime = GD.RandRange(MinHatchSeconds, MaxHatchSeconds) * colonyManager.HatchSpeedMultiplier;
+        hatchTimer.WaitTime = RestoreSecondsLeft > 0
+            ? RestoreSecondsLeft
+            : GD.RandRange(MinHatchSeconds, MaxHatchSeconds) * colonyManager.HatchSpeedMultiplier;
         hatchTimer.Timeout += Hatch;
         hatchTimer.Start();
     }

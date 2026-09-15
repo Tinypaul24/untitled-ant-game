@@ -150,6 +150,67 @@ public partial class BuildManager : Node2D
         }
     }
 
+    public List<RoomSave> CaptureRooms()
+    {
+        var saves = new List<RoomSave>();
+
+        foreach (Room room in rooms)
+        {
+            var save = new RoomSave
+            {
+                Type = (int)room.Type,
+                FootprintX = room.Footprint.Position.X,
+                FootprintY = room.Footprint.Position.Y,
+                FootprintWidth = room.Footprint.Size.X,
+                FootprintHeight = room.Footprint.Size.Y,
+                State = (int)room.State,
+                FurnishClaimed = room.FurnishClaimed,
+            };
+
+            foreach (Vector2I cell in room.PendingDigCells)
+            {
+                save.PendingDigCells.AddCell(cell);
+            }
+
+            saves.Add(save);
+        }
+
+        return saves;
+    }
+
+    public void RestoreRooms(List<RoomSave> saves)
+    {
+        CancelPlacement();
+
+        foreach (Room room in rooms)
+        {
+            room.GetParent()?.RemoveChild(room);
+            room.QueueFree();
+        }
+
+        rooms.Clear();
+        roomsByCell.Clear();
+        claimedDigCells.Clear();
+
+        foreach (RoomSave save in saves)
+        {
+            Room room = RoomScene.Instantiate<Room>();
+            room.Type = (BuildingType)save.Type;
+            room.Footprint = new Rect2I(save.FootprintX, save.FootprintY, save.FootprintWidth, save.FootprintHeight);
+            room.RestoreState(
+                GridManager.CellSize,
+                new HashSet<Vector2I>(save.PendingDigCells.ReadCells()),
+                (Room.RoomState)save.State,
+                save.FurnishClaimed
+            );
+
+            GetParent().AddChild(room);
+            rooms.Add(room);
+
+            ForEachCell(room.Footprint, cell => roomsByCell[cell] = room);
+        }
+    }
+
     public override void _UnhandledInput(InputEvent @event)
     {
         if (!IsPlacing)
