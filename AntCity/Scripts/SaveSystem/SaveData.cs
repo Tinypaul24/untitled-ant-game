@@ -5,6 +5,7 @@ public class SaveData
     public const int CurrentVersion = 1;
 
     public int Version { get; set; } = CurrentVersion;
+    public long SavedAtUnixMs { get; set; }
     public WorldSave World { get; set; } = new();
     public ColonySave Colony { get; set; } = new();
     public ClockSave Clock { get; set; } = new();
@@ -18,6 +19,36 @@ public class SaveData
     public ParticleSave Particles { get; set; } = new();
     public float TimeScale { get; set; } = 1f;
     public bool Paused { get; set; }
+}
+
+public class SaveHeader
+{
+    public int Version { get; set; }
+    public long SavedAtUnixMs { get; set; }
+    public ColonySave Colony { get; set; } = new();
+    public ClockSave Clock { get; set; } = new();
+}
+
+public class SaveSlot
+{
+    public string Path { get; set; } = string.Empty;
+    public System.DateTime SavedAt { get; set; }
+    public int Version { get; set; }
+    public int Ants { get; set; }
+    public int Food { get; set; }
+    public int Hours { get; set; }
+
+    public bool IsReadable => Version == SaveData.CurrentVersion;
+
+    public string Describe()
+    {
+        if (!IsReadable)
+        {
+            return $"{SavedAt:dd MMM HH:mm:ss}  —  different version";
+        }
+
+        return $"{SavedAt:dd MMM HH:mm:ss}  —  {Ants} ants, {Food} food, {Hours}h";
+    }
 }
 
 public class WorldSave

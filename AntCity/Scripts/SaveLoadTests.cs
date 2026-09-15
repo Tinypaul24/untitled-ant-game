@@ -12,6 +12,8 @@ public partial class SaveLoadTests : Node
     private int passed;
     private int failed;
 
+    private readonly HashSet<string> preExistingSaves = new();
+
     public override void _Ready()
     {
         main = GetNode<Node2D>("../Main");
@@ -20,12 +22,38 @@ public partial class SaveLoadTests : Node
         colony = main.GetNode<ColonyManager>("ColonyManager");
         camera = main.GetNode<Camera2D>("Camera2D");
 
+        foreach (SaveSlot slot in saveManager.ListSaves())
+        {
+            preExistingSaves.Add(slot.Path);
+        }
+
         GD.Print("--- save/load tests ---");
 
         ColonyComesBackAsItWas();
         OrdersAndSelectionComeBack();
+        PauseMenuFreezesAndResumes();
+        PauseMenuButtonsSaveAndLoad();
+        SaveListHoldsEveryColony();
+
+        DiscardSavesMadeByTheseTests();
 
         GD.Print($"--- {passed} passed, {failed} failed ---");
+    }
+
+    private void DiscardSavesMadeByTheseTests()
+    {
+        int removed = 0;
+
+        foreach (SaveSlot slot in saveManager.ListSaves())
+        {
+            if (!preExistingSaves.Contains(slot.Path) && saveManager.DeleteSave(slot.Path))
+            {
+                removed++;
+            }
+        }
+
+        Check(saveManager.ListSaves().Count == preExistingSaves.Count,
+            "the tests leave no saves of their own behind", $"(cleaned up {removed})");
     }
 
     private void ColonyComesBackAsItWas()
@@ -124,6 +152,147 @@ public partial class SaveLoadTests : Node
             "she is still digging the same cell",
             $"(was {before.DigTargetX},{before.DigTargetY}; now {after.DigTargetX},{after.DigTargetY})");
         Check(after.Selected, "she is still selected after loading");
+    }
+
+    private void PauseMenuFreezesAndResumes()
+    {
+        var menu = main.GetNode<PauseMenu>("PauseMenu");
+        var ui = main.GetNode<ColonyUI>("UI");
+
+        ui.RestoreSpeed(3f, false);
+
+        Check(!menu.IsOpen, "the menu starts closed");
+        Check(Mathf.IsEqualApprox((float)Engine.TimeScale, 3f), "the game runs at the chosen speed");
+
+        menu.Open();
+
+        Check(menu.IsOpen, "the menu opens");
+        Check(Engine.TimeScale == 0.0, "opening the menu freezes the game");
+
+        menu.Resume();
+
+        Check(!menu.IsOpen, "resume closes the menu");
+        Check(Mathf.IsEqualApprox((float)Engine.TimeScale, 3f), "resume puts the speed back where it was");
+
+        ui.RestoreSpeed(1f, false);
+    }
+
+    private void PauseMenuButtonsSaveAndLoad()
+    {
+        var menu = main.GetNode<PauseMenu>("PauseMenu");
+
+        menu.Open();
+
+        Button save = FindButton(menu, "Save Colony");
+        Button load = FindButton(menu, "Load Colony");
+
+        if (save == null || load == null)
+        {
+            Check(false, "the menu has save and load buttons");
+            return;
+        }
+
+        int food = colony.Food;
+
+        save.EmitSignal(BaseButton.SignalName.Pressed);
+
+        Check(saveManager.LastMessage == "Colony saved.", "the save button writes a save", $"(said \"{saveManager.LastMessage}\")");
+        Check(!load.Disabled, "the load button turns on once a save exists");
+
+        colony.RemoveFood(colony.Food);
+
+        load.EmitSignal(BaseButton.SignalName.Pressed);
+
+        Button slot = FindSaveSlotButton(menu);
+
+        if (slot == null)
+        {
+            Check(false, "the load button opens a list of saves");
+            return;
+        }
+
+        Check(true, "the load button opens a list of saves");
+
+        slot.EmitSignal(BaseButton.SignalName.Pressed);
+
+        Check(colony.Food == food, "picking a save from the list restores it", $"(expected {food}, got {colony.Food})");
+        Check(Engine.TimeScale == 0.0, "loading from the menu leaves the game frozen");
+        Check(menu.IsOpen, "the menu stays open after loading");
+
+        menu.Resume();
+
+        Check(!menu.IsOpen, "the menu closes again afterwards");
+        Check(Engine.TimeScale != 0.0, "the game is running again after resuming");
+    }
+
+    private void SaveListHoldsEveryColony()
+    {
+        int before = saveManager.ListSaves().Count;
+
+        saveManager.Save();
+        saveManager.Save();
+
+        List<SaveSlot> slots = saveManager.ListSaves();
+
+        Check(slots.Count == before + 2, "every save is kept as its own slot",
+            $"(expected {before + 2}, got {slots.Count})");
+
+        bool newestFirst = true;
+
+        for (int i = 1; i < slots.Count; i++)
+        {
+            newestFirst &= slots[i - 1].SavedAt >= slots[i].SavedAt;
+        }
+
+        Check(newestFirst, "the newest save is listed first");
+        Check(slots[0].Ants == colony.Ants, "a slot reports the colony it holds",
+            $"(expected {colony.Ants} ants, got {slots[0].Ants})");
+        Check(slots[0].IsReadable, "a freshly written slot is readable");
+
+        int countBeforeDelete = slots.Count;
+        saveManager.DeleteSave(slots[0].Path);
+
+        Check(saveManager.ListSaves().Count == countBeforeDelete - 1, "deleting a save takes it off the list");
+    }
+
+    private static Button FindSaveSlotButton(Node node)
+    {
+        if (node is Button button && button.TooltipText.EndsWith(".json"))
+        {
+            return button;
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            Button found = FindSaveSlotButton(child);
+
+            if (found != null)
+            {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
+    private static Button FindButton(Node node, string text)
+    {
+        if (node is Button button && button.Text == text)
+        {
+            return button;
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            Button found = FindButton(child, text);
+
+            if (found != null)
+            {
+                return found;
+            }
+        }
+
+        return null;
     }
 
     private AntWorker FirstAnt()
