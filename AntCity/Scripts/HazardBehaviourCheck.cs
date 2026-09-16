@@ -25,6 +25,10 @@ public partial class HazardBehaviourCheck : Node
         grid = GetNode<GridManager>("Main/GridManager");
         materials = GetNode<MaterialWorld>("Main/MaterialWorld");
 
+        // There are no workers until the queen has landed and cut the first shaft, so skip the
+        // arrival - otherwise this picks a subject that does not exist yet and waits for it forever.
+        GetNode<ColonyFounding>("Main/ColonyFounding").CompleteNow();
+
         foreach (Node child in GetNode("Main").GetChildren())
         {
             if (child is AntWorker ant)
@@ -51,8 +55,10 @@ public partial class HazardBehaviourCheck : Node
             Check(grid.IsHazardous(engulfed), "lava landed on the worker's own tile");
         }
 
-        // Long enough to notice (a quarter-second check) and walk one tile clear.
-        if (frames == 140)
+        // Long enough to notice, and to walk properly clear. On the open surface that is five or six
+        // tiles at an ant.s pace - she has to leave the hazard radius, not just step off the edge of
+        // the flow - so a two-second window measured her mid-escape and called it a failure.
+        if (frames == 420)
         {
             Vector2I now = grid.WorldToCell(subject.Position);
 

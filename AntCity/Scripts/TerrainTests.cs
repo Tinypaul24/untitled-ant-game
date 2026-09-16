@@ -21,6 +21,10 @@ public partial class TerrainTests : Node
         grid = GetNode<GridManager>("Main/GridManager");
         materials = GetNode<MaterialWorld>("Main/MaterialWorld");
 
+        // The colony normally spends its first few seconds flying in and digging. Tests want the
+        // world that leaves behind, not the arrival.
+        GetNode<ColonyFounding>("Main/ColonyFounding").CompleteNow();
+
         GD.Print("--- terrain tests ---");
 
         StartingWorldIsWalkable();
@@ -28,6 +32,10 @@ public partial class TerrainTests : Node
         PilesPackIntoSolidGround();
         SleepBookkeepingStaysHonest();
         RoutesGoAroundHazards();
+        ChippingEatsAWholeTile();
+        GrassBurnsAndStaysOnTheSurface();
+        DiggingLeavesCleanTunnels();
+        NestWallsCementThemselves();
         DugCorridorsStayWalkable();
         SaveRoundTripRebuildsTheWorld();
 
@@ -64,7 +72,9 @@ public partial class TerrainTests : Node
 
     private void MatterIsConserved()
     {
-        Vector2I tile = grid.NestCenterCell;
+        // The open air just above the colony. The nest cell itself is turf now that the game starts
+        // on the surface, and you cannot pour sand into solid ground.
+        Vector2I tile = grid.NestCenterCell + new Vector2I(0, -1);
 
         int before = Count(MaterialId.Sand);
         int placed = materials.EmitInto(tile, MaterialWorld.CellsPerTile, MaterialId.Sand);
@@ -436,6 +446,246 @@ public partial class TerrainTests : Node
 
         materials.ClearTile(blocked);
         materials.DeriveDirtyTiles();
+    }
+
+    // Chipping a tile away grain by grain, which is what an ant digging actually does.
+    //
+    // This existed only in the running game before, and a table sized for the old cell resolution
+    // read off the end of itself the first time a worker swung at a wall - every test passed and the
+    // game threw on the first dig. Digging is the single most common thing that happens here, so it
+    // gets a test of its own.
+    private void ChippingEatsAWholeTile()
+    {
+        Vector2I tile = FindDiggableNear(grid.NestCenterCell + new Vector2I(0, 6));
+
+        if (!grid.CanDig(tile))
+        {
+            Check(false, "a diggable tile could be found to chip");
+            return;
+        }
+
+        int before = CountSolidCells(tile);
+        int guard = 0;
+
+        // Grain by grain until the cell opens, exactly as OnDigTimeout drives it.
+        while (grid.CanDig(tile) && guard++ < GridManager.GrainsPerCell * 4)
+        {
+            grid.DigGrain(tile);
+        }
+
+        materials.DeriveDirtyTiles();
+
+        int after = CountSolidCells(tile);
+
+        Check(before > 0, "the tile started out solid", $"{before} solid cells");
+        Check(after == 0, "chipping clears every cell of the tile", $"{after} cells left");
+        Check(guard <= GridManager.GrainsPerCell * 4, "the tile opened in a sane number of grains");
+    }
+
+    private int CountSolidCells(Vector2I tile)
+    {
+        Vector2I origin = MaterialWorld.TileToCellOrigin(tile);
+        int solid = 0;
+
+        for (int y = 0; y < MaterialWorld.CellsPerTileAxis; y++)
+        {
+            for (int x = 0; x < MaterialWorld.CellsPerTileAxis; x++)
+            {
+                if (!MaterialDatabase.Get(materials.GetCell(origin + new Vector2I(x, y))).IsAir)
+                {
+                    solid++;
+                }
+            }
+        }
+
+        return solid;
+    }
+
+    // Grass burns, and grass creeps back over bare soil - but only where daylight reaches.
+    //
+    // That last part is the whole reason reactions grew conditions. As a plain material pair, grass
+    // spreading onto dirt spreads onto every dirt cell it touches, and every dirt cell touches
+    // another one all the way down: left alone it turns the entire world to turf. This checks the
+    // gate holds, because the failure is slow enough that you would not notice it until the map was
+    // green to the bedrock.
+    private void GrassBurnsAndStaysOnTheSurface()
+    {
+        Vector2I surface = new Vector2I(grid.NestCenterCell.X + 30, grid.SurfaceHeight - 1);
+        Vector2I origin = MaterialWorld.TileToCellOrigin(surface);
+
+        materials.FillTile(surface, MaterialId.Grass);
+        materials.SetCell(origin, MaterialId.Fire);
+
+        for (int tick = 0; tick < 240; tick++)
+        {
+            materials.Simulation.Step();
+        }
+
+        Check(CountCellsIn(surface, MaterialId.Grass) < MaterialWorld.CellsPerTile,
+            "fire eats into grass", $"{CountCellsIn(surface, MaterialId.Grass)} cells left of {MaterialWorld.CellsPerTile}");
+
+        // Deep underground, a lone patch of turf against soil must not spread.
+        Vector2I deep = new Vector2I(grid.NestCenterCell.X + 34, grid.SurfaceHeight + 20);
+
+        materials.FillTile(deep, MaterialId.Grass);
+
+        int before = CountGrassAround(deep, 3);
+
+        for (int tick = 0; tick < 600; tick++)
+        {
+            materials.Simulation.Step();
+        }
+
+        int after = CountGrassAround(deep, 3);
+
+        Check(after <= before, "grass does not spread underground", $"{before} cells became {after}");
+
+        materials.ClearTile(surface);
+        materials.ClearTile(deep);
+        materials.DeriveDirtyTiles();
+    }
+
+    private int CountCellsIn(Vector2I tile, MaterialId want)
+    {
+        Vector2I origin = MaterialWorld.TileToCellOrigin(tile);
+        int found = 0;
+
+        for (int y = 0; y < MaterialWorld.CellsPerTileAxis; y++)
+        {
+            for (int x = 0; x < MaterialWorld.CellsPerTileAxis; x++)
+            {
+                if (materials.GetCell(origin + new Vector2I(x, y)) == want)
+                {
+                    found++;
+                }
+            }
+        }
+
+        return found;
+    }
+
+    private int CountGrassAround(Vector2I tile, int radius)
+    {
+        int found = 0;
+
+        for (int y = -radius; y <= radius; y++)
+        {
+            for (int x = -radius; x <= radius; x++)
+            {
+                found += CountCellsIn(tile + new Vector2I(x, y), MaterialId.Grass);
+            }
+        }
+
+        return found;
+    }
+
+    // A dug corridor has to come out empty and stay walkable.
+    //
+    // Digging used to shake the surrounding soil loose so it slumped into the new tunnel. With spoil
+    // hauling off there was nowhere for it to go and it settled on the floor as scattered blocks of
+    // earth - twenty-six cells of litter in an eight-tile corridor, in every corridor, forever.
+    private void DiggingLeavesCleanTunnels()
+    {
+        Vector2I start = grid.NestCenterCell + new Vector2I(60, 10);
+        Vector2I floor = FindDiggableNear(start);
+
+        // A corridor dug the way a worker digs it, so the same signals fire.
+        for (int x = 0; x < 8; x++)
+        {
+            grid.Dig(floor + new Vector2I(x, 0));
+        }
+
+        materials.DeriveDirtyTiles();
+        Settle();
+
+        // A dug tunnel comes out empty. Nothing should be left lying in it - no loose grains, no
+        // scattered blocks of soil that slumped in and settled on the floor.
+        int litter = 0;
+
+        for (int x = 0; x < 8; x++)
+        {
+            litter += CountCellsIn(floor + new Vector2I(x, 0), MaterialId.Dirt)
+                + CountCellsIn(floor + new Vector2I(x, 0), MaterialId.LooseDirt);
+        }
+
+        Check(litter == 0, "a dug tunnel is left empty",
+            $"{litter} cells of soil still in the corridor");
+
+        // The corridor has to still be a corridor. Walkable, not merely non-solid: loose soil piling
+        // on the floor could leave a tile technically open and impossible to walk along.
+        int walkable = 0;
+
+        for (int x = 0; x < 8; x++)
+        {
+            if (grid.IsStandable(floor + new Vector2I(x, 0)))
+            {
+                walkable++;
+            }
+        }
+
+        Check(walkable >= 6, "a dug corridor is still walkable once the soil settles",
+            $"{walkable} of 8 tiles standable");
+
+    }
+
+    // Ants cement the walls they live behind. Slow on purpose, so this runs the clock rather than
+    // expecting it to have happened already.
+    private void NestWallsCementThemselves()
+    {
+        Vector2I nest = grid.NestCenterCell;
+
+        // Somewhere for them to plaster: a chamber just below the landing site.
+        for (int x = -3; x <= 3; x++)
+        {
+            for (int y = 2; y <= 3; y++)
+            {
+                grid.Dig(nest + new Vector2I(x, y));
+            }
+        }
+
+        materials.DeriveDirtyTiles();
+
+        int before = CountAround(nest, 8, MaterialId.HardenedDirt);
+
+        // The hardening sweep is driven from _Process, so give it real frames rather than ticks.
+        for (int pass = 0; pass < 400; pass++)
+        {
+            materials.HardenNestWallsForTest(0.25);
+        }
+
+        int after = CountAround(nest, 8, MaterialId.HardenedDirt);
+
+        Check(after > before, "ants cement the walls around the nest", $"{before} became {after}");
+
+        // Cemented earth is the point of cementing earth: shaking it must not turn it back to soil.
+        //
+        // Counted over a patch that is deliberately not dug through, because digging a tile clears
+        // its cells outright - measuring across the excavation would just count the earth removed by
+        // the shovel and call it a failure.
+        Vector2I witness = nest + new Vector2I(-6, 3);
+        int hardenedBefore = CountAround(witness, 1, MaterialId.HardenedDirt);
+
+        grid.Dig(nest + new Vector2I(-3, 4));
+        grid.Dig(nest + new Vector2I(-4, 4));
+
+        Check(CountAround(witness, 1, MaterialId.HardenedDirt) >= hardenedBefore,
+            "hardened earth does not shake loose when you dig beside it",
+            $"{hardenedBefore} became {CountAround(witness, 1, MaterialId.HardenedDirt)}");
+    }
+
+    private int CountAround(Vector2I tile, int radius, MaterialId want)
+    {
+        int found = 0;
+
+        for (int y = -radius; y <= radius; y++)
+        {
+            for (int x = -radius; x <= radius; x++)
+            {
+                found += CountCellsIn(tile + new Vector2I(x, y), want);
+            }
+        }
+
+        return found;
     }
 
     private static bool HoldsAHeatSource(MaterialChunk chunk)

@@ -26,6 +26,7 @@ public partial class MaterialDebugTool : Node2D
         (Key.Key6, MaterialId.Acid),
         (Key.Key7, MaterialId.Steam),
         (Key.Key8, MaterialId.Ice),
+        (Key.Key9, MaterialId.LooseDirt),
         (Key.Key0, MaterialId.Air),
     };
 
@@ -43,13 +44,15 @@ public partial class MaterialDebugTool : Node2D
 
         readout = new Label
         {
-            Position = new Vector2(12, 92),
+            Position = new Vector2(4, 46),
             Visible = false,
         };
 
+        // Sized for the 640x360 base resolution, where the theme default would fill the screen.
+        readout.AddThemeFontSizeOverride("font_size", 6);
         readout.AddThemeColorOverride("font_color", new Color("f1e6d3"));
         readout.AddThemeColorOverride("font_outline_color", new Color("17110c"));
-        readout.AddThemeConstantOverride("outline_size", 4);
+        readout.AddThemeConstantOverride("outline_size", 2);
 
         layer.AddChild(readout);
     }
@@ -161,7 +164,7 @@ public partial class MaterialDebugTool : Node2D
 
         readout.Text =
             $"MATERIAL SIM  [F1 to hide]\n" +
-            $"brush: {MaterialDatabase.Get(selected).Name}   1 sand 2 water 3 oil 4 fire 5 lava 6 acid 7 steam 8 ice 0 erase   E = explode\n" +
+            $"brush: {MaterialDatabase.Get(selected).Name}   1 sand 2 water 3 oil 4 fire 5 lava 6 acid 7 steam 8 ice 9 soil 0 erase   E = explode\n" +
             $"chunks: {World.ChunkCount}   awake: {World.AwakeChunkCount}   sleeping: {World.ChunkCount - World.AwakeChunkCount}\n" +
             $"cells scanned/tick: {simulation.CellsProcessedLastTick}   moved: {simulation.CellsMovedLastTick}{deferred}\n" +
             $"texture uploads/frame: {(Renderer != null ? Renderer.UploadsLastFrame : 0)}\n" +

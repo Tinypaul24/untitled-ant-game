@@ -47,6 +47,18 @@ public partial class GridManager : Node2D
     [Export]
     public int NestDepth { get; set; } = 6;
 
+    // Where the colony starts: on the surface, standing on the turf, with nothing dug yet. A colony
+    // begins as a queen who has landed and has to make her own way in, so where the first tunnel
+    // goes is a decision rather than something the world hands over.
+    //
+    // This is the topmost turf row, not the air above it: grass counts as walkable, so an ant stands
+    // on the turf with soil beneath her rather than hovering over it.
+    //
+    // One definition on purpose. It was written out twice - once for a fresh world and once for a
+    // restored one - and the two drifted the moment the colony moved up here, which quietly put
+    // every loaded save back underground.
+    private Vector2I SurfaceNestCell => new Vector2I(0, SurfaceHeight - GrassDepth);
+
     // How many chunks around the nest are generated immediately, so there's ground to see at the start.
     [Export]
     public int InitialRadiusChunks { get; set; } = 4;
@@ -156,7 +168,7 @@ public partial class GridManager : Node2D
     {
         InitializeNoise();
 
-        NestCenterCell = new Vector2I(0, SurfaceHeight + NestDepth);
+        NestCenterCell = SurfaceNestCell;
 
         // Pre-generate enough terrain around the nest to fill the initial view; everything further
         // out is generated on demand as ants path or dig toward it, so the map keeps expanding.
@@ -244,10 +256,26 @@ public partial class GridManager : Node2D
 
         SetTile(cell, TileType.Tunnel);
 
+        // Tunnelling into a food source salvages it rather than throwing it away.
+        //
+        // Food tiles are diggable, so a worker routing a corridor could drive straight through a
+        // seed cache and destroy forty food on her way past - a forager wrecking the very thing she
+        // was sent to collect. Whatever the storehouse cannot take is genuinely spilled, which is
+        // worth saying out loud, because that is a real loss the player can prevent by building.
         if (IsFoodTileType(previous))
         {
+            int salvaged = GetFoodAmount(cell);
             foodRemaining.Remove(cell);
-            GD.Print($"Tunneled through a food source at {cell}, destroying it. Forage it instead to collect its food.");
+
+            if (salvaged > 0 && ColonyManager != null)
+            {
+                int stored = ColonyManager.AddFood(salvaged);
+
+                if (stored < salvaged)
+                {
+                    ColonyManager.RaiseAlert($"Dug through a food source; {salvaged - stored} spilled with nowhere to store it.");
+                }
+            }
         }
 
         EmitSignal("CellDug", cell);
@@ -338,6 +366,17 @@ public partial class GridManager : Node2D
     public List<Vector2I> GetFoodSourceCells()
     {
         return new List<Vector2I>(foodRemaining.Keys);
+    }
+
+    // Fills a caller-owned list instead of handing back a fresh one. The minimap asks for this
+    // often enough that allocating a list of every food cell in the world each time showed up in
+    // the frame budget.
+    public void CollectFoodSourceCells(List<Vector2I> into)
+    {
+        foreach (Vector2I cell in foodRemaining.Keys)
+        {
+            into.Add(cell);
+        }
     }
 
     // The nearest food source no other worker has already gone after.
@@ -703,24 +742,23 @@ public partial class GridManager : Node2D
             || type == TileType.Air;
     }
 
+    // Nothing is dug. The colony begins on open ground and digs its own way in.
+    //
+    // All this does is guarantee somewhere to stand: generation can leave the spawn tile covered by
+    // a tree or a berry bush, and ants that cannot climb would have no way off it.
     private void CreateStartingNest()
     {
-        int floorY = NestCenterCell.Y;
-
-        // A tight starting chamber - two rows tall, so ants walk its floor rather than swimming
-        // around inside a big hollow box.
-        for (int x = NestCenterCell.X - 1; x <= NestCenterCell.X + 1; x++)
+        for (int x = NestCenterCell.X - 2; x <= NestCenterCell.X + 2; x++)
         {
-            for (int y = floorY - 1; y <= floorY; y++)
+            Vector2I above = new Vector2I(x, NestCenterCell.Y);
+
+            if (!IsWalkable(GetTile(above)))
             {
-                ForceDig(new Vector2I(x, y));
+                ForceDig(above);
             }
         }
 
-        CarveEntranceRamp(floorY);
-        ClearSurfaceEntrance();
-
-        GD.Print("Starting nest created!");
+        GD.Print("Colony landed on the surface.");
     }
 
     // A zigzag staircase from the chamber up to daylight. Each row steps one cell sideways, so every

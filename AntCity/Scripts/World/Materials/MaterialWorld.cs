@@ -82,15 +82,27 @@ public sealed class MaterialChunk
 // is what keeps an untouched world free to own.
 public partial class MaterialWorld : Node2D
 {
-    // 4px cells: a 16px gameplay tile is 4x4 = 16 cells. Fine enough for terrain to deform and for
-    // liquids to read as liquid. The retired spoil field used a 2px lattice, which is four times the
-    // cell count for terrain that now has to cover the whole world rather than just excavated grains.
-    public const int CellSize = 4;
-    public const int CellsPerTileAxis = 4;
+    // 2px cells: a 16px gameplay tile is 8x8 = 64 cells. Two of the game's own pixels per cell, which
+    // at the 640x360 base resolution is the finest the simulation can be and still be something you
+    // can see rather than something you have to be told about.
+    //
+    // A 1px version existed briefly and was taken back out: sixteen times the cells of the 4px
+    // original, for a look that only showed up under per-cell painting nobody kept.
+    //
+    // Anything measured in cells has to be derived from these rather than written as a literal, or
+    // it silently means something different at a different resolution. CellsPerStep below is the
+    // pattern: distances are expressed in world pixels and converted.
+    public const int CellSize = 2;
+    public const int CellsPerTileAxis = 8;
     public const int CellsPerTile = CellsPerTileAxis * CellsPerTileAxis;
 
     // CellsPerTileAxis as a power of two, for the same reason MaterialChunk.SizeShift exists.
-    private const int CellsPerTileShift = 2;
+    private const int CellsPerTileShift = 3;
+
+    // How many cells make up one world pixel step of movement, so falling and liquid spread keep the
+    // same on-screen speed whatever the cell size is. Without it, halving the cell size would halve
+    // the pace of everything that moves.
+    public const int CellsPerStep = 4 / CellSize;
 
     [Export]
     public GridManager Grid { get; set; }
@@ -158,7 +170,89 @@ public partial class MaterialWorld : Node2D
         // Once per frame rather than once per step: a tile flipping solid twice inside one frame is
         // work nobody sees, and pathfinding only reads the grid between frames anyway.
         DeriveDirtyTiles();
+
+        HardenNestWalls(delta);
     }
+
+    // Ants cementing their tunnel walls with saliva, the way real ones do.
+    //
+    // A sweep rather than a reaction, for a specific reason: a reaction fires from a cell the tick
+    // visits, and a wall that is merely sitting there is asleep. Making it stay awake to wait for a
+    // one-in-a-thousand roll would keep the entire nest ticking forever. This walks a handful of
+    // candidate cells per pass instead, so the cost is a fixed trickle no matter how big the colony
+    // gets, and the walls harden at a pace you notice over minutes rather than seconds.
+    // Driven from _Process in play; the tests call it directly so they can run the clock forward
+    // without waiting on real frames.
+    public void HardenNestWallsForTest(double delta) => HardenNestWalls(delta);
+
+    private void HardenNestWalls(double delta)
+    {
+        if (Grid == null)
+        {
+            return;
+        }
+
+        hardenTimer += delta;
+
+        if (hardenTimer < HardenIntervalSeconds)
+        {
+            return;
+        }
+
+        hardenTimer = 0;
+
+        Vector2I nest = Grid.NestCenterCell;
+
+        for (int attempt = 0; attempt < HardenAttemptsPerPass; attempt++)
+        {
+            Vector2I tile = nest + new Vector2I(
+                blastRandom.RandiRange(-HardenRadiusTiles, HardenRadiusTiles),
+                blastRandom.RandiRange(-HardenRadiusTiles, HardenRadiusTiles));
+
+            // Only ground the simulation owns, and only where a chunk already exists - hardening
+            // must never be the thing that materialises new terrain.
+            if (!TileIsSimulationOwned(tile) || !TryGetChunkCached(CellToChunk(TileToCellOrigin(tile)), out _))
+            {
+                continue;
+            }
+
+            Vector2I cell = TileToCellOrigin(tile) + new Vector2I(
+                blastRandom.RandiRange(0, CellsPerTileAxis - 1),
+                blastRandom.RandiRange(0, CellsPerTileAxis - 1));
+
+            MaterialId here = GetCell(cell);
+
+            if (here != MaterialId.Dirt && here != MaterialId.LooseDirt)
+            {
+                continue;
+            }
+
+            // Only the face of a wall. Ants plaster the tunnel they walk through, not the rock a
+            // metre behind it.
+            if (!TouchesAir(cell))
+            {
+                continue;
+            }
+
+            SetCell(cell, MaterialId.HardenedDirt);
+        }
+    }
+
+    private bool TouchesAir(Vector2I cell)
+    {
+        return MaterialDatabase.Get(GetCell(cell + Vector2I.Up)).IsAir
+            || MaterialDatabase.Get(GetCell(cell + Vector2I.Down)).IsAir
+            || MaterialDatabase.Get(GetCell(cell + Vector2I.Left)).IsAir
+            || MaterialDatabase.Get(GetCell(cell + Vector2I.Right)).IsAir;
+    }
+
+    // How far from the nest the colony bothers to plaster, how often it works, and how many cells it
+    // tries per pass. Tuned for a trickle: the core of a burrow cements over a few minutes.
+    private const int HardenRadiusTiles = 14;
+    private const double HardenIntervalSeconds = 0.25;
+    private const int HardenAttemptsPerPass = 24;
+
+    private double hardenTimer;
 
     public int ChunkCount => chunks.Count;
 
@@ -322,6 +416,13 @@ public partial class MaterialWorld : Node2D
         awakeChunks.Remove(chunk.Coord);
     }
 
+    // Puts the rows a tick ran out of budget for back on the list, exactly as they were.
+    public void RedirtyRows(MaterialChunk chunk, int minX, int minY, int maxX, int maxY)
+    {
+        MarkChunkDirty(chunk, minX, minY);
+        MarkChunkDirty(chunk, maxX, maxY);
+    }
+
     // Whether anything in the world currently has a countdown or an off-ambient temperature. When
     // nothing does - which is any world without fire, lava or steam in it - every read below is a
     // hash of a key that cannot be there, and the tick can skip the transient bookkeeping wholesale.
@@ -436,18 +537,8 @@ public partial class MaterialWorld : Node2D
         }
 
         MaterialChunk chunk = new MaterialChunk(chunkCoord);
-        Vector2I originCell = chunkCoord * MaterialChunk.Size;
 
-        // Fill from the tile grid so a freshly materialised chunk matches the terrain that was
-        // already there. One tile covers a 4x4 block of cells.
-        for (int localY = 0; localY < MaterialChunk.Size; localY++)
-        {
-            for (int localX = 0; localX < MaterialChunk.Size; localX++)
-            {
-                Vector2I cell = originCell + new Vector2I(localX, localY);
-                chunk.Cells[localY * MaterialChunk.Size + localX] = (byte)MaterialFromTile(CellToTile(cell));
-            }
-        }
+        FillChunkFromTiles(chunk);
 
         chunks[chunkCoord] = chunk;
 
@@ -463,6 +554,25 @@ public partial class MaterialWorld : Node2D
     public bool TryGetChunk(Vector2I chunkCoord, out MaterialChunk chunk)
     {
         return TryGetChunkCached(chunkCoord, out chunk);
+    }
+
+    // ---- terrain generation -----------------------------------------------------------------
+
+    // Every cell of a tile gets the tile's material, so a 4x4 block of cells is one flat substance.
+    // This is why painting terrain per cell still looked blocky: the cells were never given anything
+    // to say that the tile had not already said.
+    private void FillChunkFromTiles(MaterialChunk chunk)
+    {
+        Vector2I originCell = chunk.Coord * MaterialChunk.Size;
+
+        for (int localY = 0; localY < MaterialChunk.Size; localY++)
+        {
+            for (int localX = 0; localX < MaterialChunk.Size; localX++)
+            {
+                Vector2I cell = originCell + new Vector2I(localX, localY);
+                chunk.Cells[localY * MaterialChunk.Size + localX] = (byte)MaterialFromTile(CellToTile(cell));
+            }
+        }
     }
 
     public IReadOnlyDictionary<Vector2I, MaterialChunk> Chunks => chunks;
@@ -636,6 +746,7 @@ public partial class MaterialWorld : Node2D
 
         int solid = 0;
         int stone = 0;
+        int grass = 0;
 
         for (int y = 0; y < CellsPerTileAxis; y++)
         {
@@ -655,13 +766,22 @@ public partial class MaterialWorld : Node2D
                 {
                     stone++;
                 }
+                else if (id == MaterialId.Grass)
+                {
+                    grass++;
+                }
             }
         }
 
         bool shouldBeSolid = solid >= SolidCellsForSolidTile;
 
+        // Stone first, then turf, then plain soil. Turf only needs a third of the tile because it is
+        // a skin over the dirt rather than the bulk of it - demanding a majority would mean a tile
+        // never read as grass at all.
         GridManager.TileType wanted = shouldBeSolid
-            ? (stone * 2 >= solid ? GridManager.TileType.Rock : GridManager.TileType.Dirt)
+            ? (stone * 2 >= solid ? GridManager.TileType.Rock
+                : grass * 3 >= solid ? GridManager.TileType.Grass
+                : GridManager.TileType.Dirt)
             : PassableTileFor(tile);
 
         if (wanted != current)
@@ -684,7 +804,8 @@ public partial class MaterialWorld : Node2D
         return type == GridManager.TileType.Tunnel
             || type == GridManager.TileType.Air
             || type == GridManager.TileType.Dirt
-            || type == GridManager.TileType.Rock;
+            || type == GridManager.TileType.Rock
+            || type == GridManager.TileType.Grass;
     }
 
     // ---- digging integration ----------------------------------------------------------------
@@ -696,8 +817,54 @@ public partial class MaterialWorld : Node2D
 
     // An even scatter, so a tile chipped a quarter at a time erodes all over rather than from one
     // corner. Ordered-dither indices into the 4x4 block.
-    private static readonly int[] ChipOrder = { 0, 10, 2, 8, 14, 4, 12, 6, 3, 9, 1, 11, 13, 7, 15, 5 };
+    // The order cells of a tile are chipped away in, so a half-dug tile has its material spread
+    // evenly rather than cleared from one corner.
+    //
+    // Generated rather than written out. It used to be a hand-written list of sixteen slots, which
+    // was correct while a tile was sixteen cells and read straight off the end of itself the moment
+    // a tile became 256 - the exact failure the comment on CellsPerTile warns about, missed anyway.
+    private static readonly int[] ChipOrder = BuildChipOrder();
 
+    // Ordered-dither sequence. A Bayer matrix visits a grid in an order that stays evenly spread at
+    // every prefix, which is precisely what "half dug" should look like.
+    private static int[] BuildChipOrder()
+    {
+        var order = new int[CellsPerTile];
+
+        for (int y = 0; y < CellsPerTileAxis; y++)
+        {
+            for (int x = 0; x < CellsPerTileAxis; x++)
+            {
+                order[BayerIndex(x, y)] = y * CellsPerTileAxis + x;
+            }
+        }
+
+        return order;
+    }
+
+    // A bijection of the tile onto 0..CellsPerTile-1, so every slot is filled exactly once.
+    private static int BayerIndex(int x, int y)
+    {
+        int value = 0;
+
+        for (int bit = CellsPerTileShift - 1; bit >= 0; bit--)
+        {
+            int xi = (x >> bit) & 1;
+            int yi = (y >> bit) & 1;
+
+            value = (value << 2) | ((xi ^ yi) << 1) | yi;
+        }
+
+        return value;
+    }
+
+
+    // Digging simply removes the earth. Nothing is shaken loose around the hole.
+    //
+    // It used to jar the surrounding soil into loose grains that slumped into the new tunnel. With
+    // spoil hauling off there was nowhere for any of that to go, so it settled on the floor and
+    // stayed: every corridor came out speckled with blocks of soil nobody could clear, which reads
+    // as the digging being broken rather than as physics.
     private void OnTileDug(Vector2I tile)
     {
         ClearTile(tile);
@@ -913,6 +1080,25 @@ public partial class MaterialWorld : Node2D
         }
     }
 
+    // Whether a cell is close enough to the surface for daylight to reach it. Used by reactions that
+    // only make sense in the open, so that opening a deep tunnel to the air does not make it a place
+    // things grow.
+    public bool IsNearSurface(Vector2I cell)
+    {
+        return Grid != null && CellToTile(cell).Y <= Grid.SurfaceHeight + DaylightDepthTiles;
+    }
+
+    // Tiles below the surface line that still count as lit.
+    private const int DaylightDepthTiles = 2;
+
+    // Whether the simulation may draw over and rewrite this tile. Food deposits, built rooms and the
+    // rest are the tilemap.s to draw and keep their own art no matter what has washed over the cells
+    // beneath them.
+    public bool TileIsSimulationOwned(Vector2I tile)
+    {
+        return Grid != null && IsSimulationOwned(Grid.GetTileAt(tile));
+    }
+
     // ---- terrain baseline -------------------------------------------------------------------
 
     private MaterialId MaterialFromTile(Vector2I tile)
@@ -928,6 +1114,7 @@ public partial class MaterialWorld : Node2D
             GridManager.TileType.Water => MaterialId.Water,
             GridManager.TileType.Tunnel => MaterialId.Air,
             GridManager.TileType.Air => MaterialId.Air,
+            GridManager.TileType.Grass => MaterialId.Grass,
             _ => MaterialId.Dirt,
         };
     }

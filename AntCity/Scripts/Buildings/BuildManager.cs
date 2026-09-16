@@ -356,14 +356,16 @@ public partial class BuildManager : Node2D
         }
     }
 
-    private void TryCreateRoom(Rect2I footprint)
+    // Public so tests and probes can place a room without synthesising mouse input. This is the same
+    // path the drag-to-place UI takes, so exercising it exercises the real thing.
+    public void TryCreateRoom(Rect2I footprint, BuildingType? forced = null)
     {
         if (!IsFootprintValid(footprint))
         {
             return;
         }
 
-        BuildingType type = pendingType.Value;
+        BuildingType type = forced ?? pendingType.Value;
         int cellCount = footprint.Size.X * footprint.Size.Y;
         BuildingDef def = BuildingDefs.All[type];
 

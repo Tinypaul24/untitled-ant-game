@@ -27,6 +27,9 @@ public enum MaterialId : byte
     Lava = 9,
     Steam = 10,
     Ice = 11,
+    Grass = 12,
+    LooseDirt = 13,
+    HardenedDirt = 14,
 }
 
 // Everything the simulation knows about one material.
@@ -48,6 +51,14 @@ public sealed class MaterialDefinition
     // How far a liquid will try to spread sideways in one tick when it cannot fall. Higher reads as
     // runnier; 0 means it only ever falls.
     public int DispersionRate { get; init; }
+
+    // Odds of actually attempting that spread on any given tick. Below 1 this is viscosity: the
+    // material still travels the same distance per move, just not every tick.
+    //
+    // DispersionRate alone cannot express slow, because one cell per tick at 30 ticks a second is
+    // already several times an ant's walking speed - lava "crawling" still outran anything trying to
+    // get away from it, which made it an instant-death field rather than a hazard.
+    public float FlowChance { get; init; } = 1f;
 
     // Whether something heavier is allowed to push through this rather than resting on it.
     public bool Displaceable { get; init; }
@@ -91,10 +102,10 @@ public sealed class MaterialDefinition
     public bool Flows => Kind == MaterialKind.Liquid || Kind == MaterialKind.Gas;
     public bool Falls => GravityAffected;
 
-    // Whether the renderer paints this over the tilemap. Dirt and stone are already the tilemap job -
-    // it draws them with texture and proper edges - so the simulation only paints what it adds on
-    // top: loose powders, liquids and gases.
-    public bool RenderedOverTerrain => Kind == MaterialKind.Powder || Kind == MaterialKind.Liquid || Kind == MaterialKind.Gas;
+    // Whether the renderer paints this. Everything except air, now that terrain is made of the same
+    // cells as everything else - painting only the loose materials would leave dirt and stone drawn
+    // by the 16px tileset and the rest drawn per cell, which reads as two different games.
+    public bool RenderedOverTerrain => Kind != MaterialKind.Air;
 }
 
 public static class MaterialDatabase
@@ -119,9 +130,43 @@ public static class MaterialDatabase
         {
             Id = MaterialId.Dirt,
             Name = "Dirt",
+            // Packed earth, and deliberately not a powder. This is the whole world: when it was one,
+            // every tunnel filled in behind the ants that dug it. Ground holds unless something
+            // genuinely undermines it - standing water soaks it into mud, and a blast throws it.
             Kind = MaterialKind.Solid,
             Colour = new Color("6b4a32"),
             Density = 1400f,
+            Diggable = true,
+            Destructible = true,
+        });
+
+        Add(new MaterialDefinition
+        {
+            Id = MaterialId.LooseDirt,
+            Name = "Loose Soil",
+            // Nothing produces this on its own any more - digging used to, and the litter it left in
+            // every tunnel was worse than the effect was worth. It stays because save files carry
+            // material ids by number, and because it is still a useful thing to paint by hand.
+            Kind = MaterialKind.Powder,
+            // Paler than packed earth, so a wall that has been shaken loose is visibly the thing
+            // about to come down rather than a surprise.
+            Colour = new Color("7d5a3e"),
+            // Lighter than packed dirt: it is the same soil with the air still in it.
+            Density = 1250f,
+            GravityAffected = true,
+            Diggable = true,
+            Destructible = true,
+        });
+
+        Add(new MaterialDefinition
+        {
+            Id = MaterialId.HardenedDirt,
+            Name = "Hardened Earth",
+            Kind = MaterialKind.Solid,
+            // Grey-brown, like the cemented nest walls real ants build out of soil and saliva.
+            Colour = new Color("5a4a3c"),
+            // Denser than packed dirt, which also makes it stand up better to a blast.
+            Density = 1900f,
             Diggable = true,
             Destructible = true,
         });
@@ -243,6 +288,9 @@ public static class MaterialDatabase
             DispersionRate = 1,
             Displaceable = true,
             Harmful = true,
+            // Thick and slow. At full flow a spreading pool covers ground several times faster than
+            // an ant walks, so there was no such thing as getting out of the way of it.
+            FlowChance = 0.12f,
             DefaultTemperature = 1100f,
             HeatOutput = 14f,
         });
@@ -262,6 +310,25 @@ public static class MaterialDatabase
             Lifetime = 150,
             DecaysTo = MaterialId.Water,
             DefaultTemperature = 120f,
+        });
+
+        Add(new MaterialDefinition
+        {
+            Id = MaterialId.Grass,
+            Name = "Grass",
+            // Loose like the dirt it sits on, so a turf edge slumps rather than overhanging.
+            Kind = MaterialKind.Powder,
+            Colour = new Color("4c8b3a"),
+            // Lighter than dirt, so it stays on top of soil it is dropped onto instead of sinking.
+            Density = 1200f,
+            GravityAffected = true,
+            Diggable = true,
+            Destructible = true,
+            Flammable = true,
+            // Catches far more readily than oil. Dry turf is the easiest thing in the world to light,
+            // and a grass fire that needed oil temperatures would never start from a stray ember.
+            IgnitionTemperature = 180f,
+            BurnsTo = MaterialId.Fire,
         });
 
         Add(new MaterialDefinition

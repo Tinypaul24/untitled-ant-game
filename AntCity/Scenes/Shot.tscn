@@ -5,6 +5,7 @@
 
 [node name="Shot" type="Node"]
 script = ExtResource("2_shot")
+Tag = ""
 
 [node name="Main" parent="." instance=ExtResource("1_main")]
 

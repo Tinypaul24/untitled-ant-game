@@ -13,6 +13,10 @@ public partial class Queen : Node2D
     private ColonyManager colonyManager;
     private double layAccumulator;
 
+    // False while she is still on the wing or cutting the first shaft. A queen mid-flight has no
+    // nest to lay in, and an egg dropped on the lawn would have nowhere to go.
+    public bool Grounded { get; set; } = true;
+
     public override void _Ready()
     {
         GD.Print("The Queen has arrived!");
@@ -23,7 +27,7 @@ public partial class Queen : Node2D
 
     public override void _Process(double delta)
     {
-        if (!colonyManager.LayingEnabled)
+        if (!Grounded || !colonyManager.LayingEnabled)
         {
             return;
         }

@@ -224,7 +224,7 @@ public partial class MaterialBenchmark : Node
         {
             foreach (MaterialChunk chunk in dirty)
             {
-                MaterialRenderer.Repaint(image, chunk);
+                MaterialRenderer.Repaint(image, chunk, materials);
             }
         });
     }

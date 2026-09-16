@@ -35,10 +35,10 @@ public sealed class MaterialSimulation
     // How many cells one tick will scan before deferring the rest to the next one.
     //
     // Without a cap, cost is set by however much happens to be moving, and a big enough flood simply
-    // takes the frame rate with it. A chunk is never split mid-scan - that would break the bottom-up
-    // ordering that stops material falling twice in a tick - so the real ceiling is this plus one
-    // chunk. Deferred chunks keep their dirty rectangles and are picked up next tick, so nothing is
-    // lost; extreme floods just settle more slowly instead of stuttering.
+    // takes the frame rate with it. A scan stops on a row boundary, which keeps the bottom-up rule
+    // intact, so the real ceiling is this plus one row. Whatever is left keeps its dirty rectangle
+    // and is picked up next tick, so nothing is lost; extreme floods settle more slowly instead of
+    // stuttering.
     //
     // Sized from measurement: a settling pool costs roughly 1.7us per scanned cell, so this is about
     // 8ms. Retune it against the benchmark rather than by feel.
@@ -78,7 +78,6 @@ public sealed class MaterialSimulation
         {
             Vector2I chunkCoord = coords[(start + i) % coords.Count];
 
-            // Checked between chunks rather than inside one, so a chunk is always scanned whole.
             if (CellsProcessedLastTick >= MaxCellsPerTick)
             {
                 ChunksDeferredLastTick = coords.Count - i;
@@ -113,6 +112,16 @@ public sealed class MaterialSimulation
 
         for (int localY = maxY; localY >= minY; localY--)
         {
+            // Checked between rows, not between chunks. At 1px a fully dirty chunk is 4096 cells, so
+            // finishing one no matter what meant the budget could be overshot by more than the
+            // budget itself. Stopping on a row boundary keeps the bottom-up rule intact: the rows
+            // left over go back on the list and are simply a smaller dirty rectangle next tick.
+            if (CellsProcessedLastTick >= MaxCellsPerTick && localY < maxY)
+            {
+                world.RedirtyRows(chunk, minX, minY, maxX, localY);
+                return;
+            }
+
             for (int step = 0; step <= maxX - minX; step++)
             {
                 int localX = scanLeftToRight ? minX + step : maxX - step;
@@ -202,6 +211,15 @@ public sealed class MaterialSimulation
                 continue;
             }
 
+            // Conditions are checked against whichever cells actually change identity, not against
+            // the pair as a whole. Grass regrowing onto soil only changes the soil, and it is the
+            // soil that has to be somewhere grass could plausibly take hold.
+            if (!MeetsNeeds(cell, id, reaction.BecomesA, reaction.Needs)
+                || !MeetsNeeds(neighbour, other, reaction.BecomesB, reaction.Needs))
+            {
+                continue;
+            }
+
             if (random.Randf() > reaction.Chance)
             {
                 // In contact, but the roll failed this tick. The cell has to stay awake or the
@@ -222,6 +240,51 @@ public sealed class MaterialSimulation
         }
 
         return false;
+    }
+
+    // A cell that is not changing has nothing to satisfy; only the ones being rewritten are tested.
+    private bool MeetsNeeds(Vector2I cell, MaterialId before, MaterialId after, ReactionNeeds needs)
+    {
+        if (needs == ReactionNeeds.Nothing || before == after)
+        {
+            return true;
+        }
+
+        if (needs.HasFlag(ReactionNeeds.Daylight) && !world.IsNearSurface(cell))
+        {
+            return false;
+        }
+
+        if (needs.HasFlag(ReactionNeeds.AirContact) && CountNeighbours(cell, MaterialKind.Air) == 0)
+        {
+            return false;
+        }
+
+        if (needs.HasFlag(ReactionNeeds.Buried) && CountNeighbours(cell, MaterialKind.Air) > 0)
+        {
+            return false;
+        }
+
+        return !needs.HasFlag(ReactionNeeds.Saturated)
+            || CountNeighbours(cell, MaterialKind.Liquid) >= SaturatingNeighbours;
+    }
+
+    // Out of the four orthogonal neighbours, so this is "more than half surrounded by liquid".
+    private const int SaturatingNeighbours = 3;
+
+    private int CountNeighbours(Vector2I cell, MaterialKind kind)
+    {
+        int found = 0;
+
+        for (int i = 0; i < Neighbours.Length; i++)
+        {
+            if (MaterialDatabase.Get(world.GetCell(cell + Neighbours[i])).Kind == kind)
+            {
+                found++;
+            }
+        }
+
+        return found;
     }
 
 
@@ -313,23 +376,55 @@ public sealed class MaterialSimulation
 
     // Straight down for anything heavier than air, straight up for anything lighter, then the two
     // diagonals so powders form slopes instead of towers.
+    //
+    // Each of those is a move of up to CellsPerStep cells rather than exactly one. A cell is a world
+    // pixel now, and one pixel per tick is a quarter of the speed material used to fall at - sand
+    // would drift rather than drop. Walking out cell by cell and stopping at the first thing in the
+    // way keeps it from tunnelling through a floor on the way.
     private bool TryFall(Vector2I cell, MaterialDefinition definition)
     {
         int vertical = definition.Density < 0f ? -1 : 1;
 
-        if (TryMove(cell, cell + new Vector2I(0, vertical), definition))
+        if (TryStep(cell, new Vector2I(0, vertical), definition, MaterialWorld.CellsPerStep))
         {
             return true;
         }
 
         int first = random.Randf() < 0.5f ? -1 : 1;
 
-        if (TryMove(cell, cell + new Vector2I(first, vertical), definition))
+        if (TryStep(cell, new Vector2I(first, vertical), definition, MaterialWorld.CellsPerStep))
         {
             return true;
         }
 
-        return TryMove(cell, cell + new Vector2I(-first, vertical), definition);
+        return TryStep(cell, new Vector2I(-first, vertical), definition, MaterialWorld.CellsPerStep);
+    }
+
+    // Moves as far along `direction` as the way is clear, up to maxSteps.
+    private bool TryStep(Vector2I from, Vector2I direction, MaterialDefinition mover, int maxSteps)
+    {
+        int furthest = FurthestReachable(from, direction, mover, maxSteps);
+
+        return furthest > 0 && TryMove(from, from + direction * furthest, mover);
+    }
+
+    // How far a mover can travel along `direction` before something stops it. A run of clear cells
+    // is a prefix, so the answer is simply the last one before the first blocked cell.
+    private int FurthestReachable(Vector2I from, Vector2I direction, MaterialDefinition mover, int maxSteps)
+    {
+        int furthest = 0;
+
+        for (int step = 1; step <= maxSteps; step++)
+        {
+            if (!CanDisplace(mover, MaterialDatabase.Get(world.GetCell(from + direction * step))))
+            {
+                break;
+            }
+
+            furthest = step;
+        }
+
+        return furthest;
     }
 
     // A liquid that cannot fall runs sideways, looking further than one cell so a pool levels out in
@@ -342,25 +437,21 @@ public sealed class MaterialSimulation
     // the same cells from scratch every time, which is where a settling pool spent its tick.
     private bool TrySpread(Vector2I cell, MaterialDefinition definition)
     {
+        // Viscous things only try on some ticks. They still have to stay awake, or a pool that
+        // failed its roll would settle and never flow again.
+        if (definition.FlowChance < 1f && random.Randf() > definition.FlowChance)
+        {
+            world.Wake(cell);
+            return false;
+        }
+
         int direction = random.Randf() < 0.5f ? -1 : 1;
 
         for (int attempt = 0; attempt < 2; attempt++)
         {
-            int furthest = 0;
-
-            for (int distance = 1; distance <= definition.DispersionRate; distance++)
-            {
-                Vector2I step = cell + new Vector2I(direction * distance, 0);
-
-                if (!CanDisplace(definition, MaterialDatabase.Get(world.GetCell(step))))
-                {
-                    break;
-                }
-
-                furthest = distance;
-            }
-
-            if (furthest > 0 && TryMove(cell, cell + new Vector2I(direction * furthest, 0), definition))
+            // DispersionRate is written in world pixels for the same reason falling is: at 1px cells
+            // an unconverted rate would make every liquid four times as sluggish as it was designed.
+            if (TryStep(cell, new Vector2I(direction, 0), definition, definition.DispersionRate * MaterialWorld.CellsPerStep))
             {
                 return true;
             }

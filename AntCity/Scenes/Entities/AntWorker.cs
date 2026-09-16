@@ -69,6 +69,10 @@ public partial class AntWorker : Area2D
     private Vector2I pendingDigCell;
     private Action pendingDigCallback;
     private double hazardCheckTimer;
+
+    // True while she is walking a route out of danger, which is the one time she is allowed to head
+    // into a hazardous cell on purpose.
+    private bool escaping;
     private Vector2I? forageTarget;
     private int carriedFood;
     private readonly List<MaterialId> carriedGrains = new();
@@ -125,8 +129,9 @@ public partial class AntWorker : Area2D
             hazardCheckTimer = 0;
 
             // Reacts to danger arriving beside her, not just under her. Waiting to be engulfed is
-            // too late when the flow moves several times faster than she walks.
-            if (gridManager.IsHazardNear(gridManager.WorldToCell(Position), HazardReactionCells))
+            // too late when the flow moves faster than she walks. Skipped while already escaping, or
+            // the run for safety restarts from scratch every quarter second and never gets anywhere.
+            if (!escaping && gridManager.IsHazardNear(gridManager.WorldToCell(Position), HazardReactionCells))
             {
                 FleeHazard();
             }
@@ -200,6 +205,10 @@ public partial class AntWorker : Area2D
 
         FollowPath(route, ApproachForageTarget);
     }
+
+    // What she is doing, for the colony probe. Reading a private enum through a string keeps the
+    // diagnostic from becoming a reason to widen the real state machine.
+    public string DebugState => hasDigJob ? "digging" : forageTarget.HasValue ? "foraging" : state.ToString().ToLower();
 
     public void SetSelected(bool selected)
     {
@@ -487,6 +496,7 @@ public partial class AntWorker : Area2D
         if (pendingPath.Count == 0)
         {
             state = State.Idle;
+            escaping = false;
 
             Action callback = onPathComplete;
             onPathComplete = null;
@@ -501,12 +511,18 @@ public partial class AntWorker : Area2D
         // after a path was worked out. Re-checking the one cell she is about to step into catches
         // that for the cost of a single lookup, and is the difference between a worker walking into
         // a flow and walking away from one.
-        if (gridManager.IsHazardous(next))
+        //
+        // Except while escaping. A route out of a flow she is already standing in has to cross the
+        // rest of it - FindNearestSafeCell plans that deliberately - so refusing the next cell here
+        // aborted the escape and started it again, every quarter second, forever. She stood in lava
+        // recomputing a way out she was never allowed to take.
+        if (!escaping && gridManager.IsHazardous(next))
         {
             FleeHazard();
             return;
         }
 
+        escaping = true;
         moveTarget = gridManager.CellToWorld(pendingPath.Dequeue());
         state = State.Walking;
     }

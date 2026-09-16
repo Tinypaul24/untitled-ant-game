@@ -27,6 +27,9 @@ public partial class SaveLoadTests : Node
             preExistingSaves.Add(slot.Path);
         }
 
+        // Same reason as the terrain suite: these want the colony a few seconds in, not mid-arrival.
+        main.GetNode<ColonyFounding>("ColonyFounding").CompleteNow();
+
         GD.Print("--- save/load tests ---");
 
         ColonyComesBackAsItWas();

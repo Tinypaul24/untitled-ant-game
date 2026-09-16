@@ -4,9 +4,9 @@ using System.Collections.Generic;
 public partial class PauseMenu : CanvasLayer
 {
     private const int MenuLayer = 10;
-    private const int PanelWidth = 380;
-    private const int ButtonSpacing = 8;
-    private const int SaveListHeight = 260;
+    private const int PanelWidth = 190;
+    private const int ButtonSpacing = 4;
+    private const int SaveListHeight = 120;
 
     private static readonly Theme GameTheme = GD.Load<Theme>("res://AntCity/UI/GameTheme.tres");
     private static readonly Color DimColor = new Color(0f, 0f, 0f, 0.55f);
