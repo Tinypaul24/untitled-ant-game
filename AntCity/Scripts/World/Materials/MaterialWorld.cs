@@ -140,6 +140,18 @@ public partial class MaterialWorld : Node2D
 
     public override void _Ready()
     {
+        // Three systems declare the tile size independently and none of them agree by construction:
+        // GridManager.CellSize is an [Export], the TileSet in Main.tscn leans on Godot's default
+        // 16x16 region, and CellSize * CellsPerTileAxis is this one. CellToTile shifts a material
+        // cell straight into a tile index, so if they ever drift the simulation silently addresses
+        // the wrong tiles - terrain derivation, digging and hazards all land one place over.
+        if (Grid != null && Grid.CellSize != CellSize * CellsPerTileAxis)
+        {
+            GD.PushError(
+                $"Tile size mismatch: GridManager.CellSize is {Grid.CellSize} but the material grid " +
+                $"covers {CellSize * CellsPerTileAxis}px per tile. These must be equal.");
+        }
+
         simulation = new MaterialSimulation(this);
         blastRandom.Randomize();
 

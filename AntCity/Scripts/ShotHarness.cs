@@ -20,7 +20,7 @@ public partial class ShotHarness : Node
         grid = GetNode<GridManager>("Main/GridManager");
         camera = GetNode<Camera2D>("Main/Camera2D");
 
-        camera.Zoom = Vector2.One;
+        // Left at whatever the game itself defaults to, so screenshots show what a player sees.
     }
 
     public override void _Process(double delta)

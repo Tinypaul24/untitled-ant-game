@@ -13,6 +13,10 @@ public partial class AntWorker : Area2D
         Building
     }
 
+    // Left alone deliberately, despite the ant now being 12px rather than 7. The whole food economy
+    // is tuned against this - dig time, forage round trips, upkeep per hour - and the hazard escape
+    // check has a fixed frame deadline she has to clear. Changing walking speed to fix a sprite
+    // scale would be a balance change smuggled in behind an art change.
     private const float MoveSpeed = 24f;
     private const float ArrivalDistance = 2f;
     // Seconds to excavate one whole cell, split evenly across the grains it is made of.
@@ -21,12 +25,14 @@ public partial class AntWorker : Area2D
     private const int WanderCellRadius = 3;
     private const double MinWanderPause = 1.0;
     private const double MaxWanderPause = 3.0;
-    private const float SelectionRingRadius = 6f;
+    // Clear of a 12px body rather than cutting through it.
+    private const float SelectionRingRadius = 8f;
     private const float ForageSeconds = 1f;
     private const int ForageCarryCapacity = 10;
     private const int HarvestPerTick = 2;
-    // How far afield an idle worker will look for something to forage, in world units.
-    private const float ForageSearchRadius = 24f * 16f;
+    // How far afield an idle worker will look for something to forage, in world units. Expressed in
+    // tiles rather than as a pixel literal, so it means the same thing if the tile size ever moves.
+    private const int ForageSearchTiles = 24;
     // Each dig tick scrapes out a share of the cell; a full load is three cells worth, matching the old haul cadence.
     private const int GrainsPerDigTick = MaterialWorld.CellsPerTile / GridManager.GrainsPerCell;
     private const int HaulCapacityGrains = MaterialWorld.CellsPerTile * 3;
@@ -36,7 +42,9 @@ public partial class AntWorker : Area2D
     private const double HazardCheckSeconds = 0.25;
     // How close something harmful has to get before she drops everything and moves.
     private const int HazardReactionCells = 1;
-    private const float MouthOffset = 6f;
+    // Out at the mandibles of a 12px body, so a carried load sits in front of her rather than on
+    // top of her.
+    private const float MouthOffset = 8f;
     private const float CarriedSpeckSize = 2f;
 
     private static readonly Color SelectionRingColor = new Color(1f, 1f, 0.4f);
@@ -427,7 +435,7 @@ public partial class AntWorker : Area2D
 
         // Food is the one thing the colony always needs, and nobody else is going to fetch it. An idle
         // worker goes looking rather than milling about, which is what lets the colony feed itself.
-        if (gridManager.TryFindForageTarget(Position, ForageSearchRadius, out Vector2I food))
+        if (gridManager.TryFindForageTarget(Position, ForageSearchTiles * gridManager.CellSize, out Vector2I food))
         {
             CommandForage(food);
             return;
@@ -957,7 +965,11 @@ public partial class AntWorker : Area2D
 
     private void UpdateFacing(Vector2 direction)
     {
-        bool horizontal = Mathf.Abs(direction.X) > Mathf.Abs(direction.Y);
+        // Greater-or-equal, not greater. Every ramp in the game is an exact 45 degrees, because
+        // MoveDirections only holds unit diagonals - so |dx| == |dy| exactly, the strict comparison
+        // fell through to the vertical branch, and the ant rendered facing Up or Down while walking
+        // sideways. She visibly slid down every slope in the colony.
+        bool horizontal = Mathf.Abs(direction.X) >= Mathf.Abs(direction.Y);
 
         sprite.Texture = horizontal
             ? (direction.X > 0 ? RightTexture : LeftTexture)

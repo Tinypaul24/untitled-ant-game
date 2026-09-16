@@ -506,7 +506,9 @@ public partial class GridManager : Node2D
 
                 if (next == goal)
                 {
-                    return BuildPath(cameFrom, start, goal);
+                    // Simplified here rather than in BuildPath, because BuildPath also serves
+                    // PlanDigRoute, whose output is a carve list rather than a walking route.
+                    return SimplifyRoute(BuildPath(cameFrom, start, goal));
                 }
 
                 frontier.Enqueue(next);
@@ -529,5 +531,92 @@ public partial class GridManager : Node2D
 
         path.Reverse();
         return path;
+    }
+
+    // Drops waypoints an ant does not actually need to walk to.
+    //
+    // The search is an unweighted breadth-first walk over MoveDirections, where a diagonal costs
+    // exactly what a sideways step costs. It therefore *prefers* diagonals, and a run across flat
+    // ground comes back as a staircase: down-right, right, down-right, right. The ant then walks
+    // that staircase literally, turning ninety degrees every sixteen pixels.
+    //
+    // This keeps a waypoint only where the route genuinely has to turn. Everything between is on a
+    // straight line she can cover in one glide, so the corner count collapses and the motion reads
+    // as a path rather than as a grid being traversed.
+    //
+    // It never invents a move: every kept waypoint came out of the search, and the segments between
+    // them are re-checked against the same walkability and no-climbing rules below.
+    //
+    // ONLY for routes an ant walks. PlanDigRoute returns a list of cells to *excavate*, which
+    // DigTowardTarget dequeues and digs one at a time - simplifying that would silently skip
+    // excavations and leave the corridor full of holes, and the undermining guards assume every
+    // cell in the plan gets carved.
+    public List<Vector2I> SimplifyRoute(List<Vector2I> path)
+    {
+        if (path.Count <= 2)
+        {
+            return path;
+        }
+
+        var smoothed = new List<Vector2I> { path[0] };
+        int anchor = 0;
+
+        for (int i = 1; i < path.Count - 1; i++)
+        {
+            // Look one further: if the ant can go straight from the anchor to path[i + 1], then
+            // path[i] is a corner she does not have to turn at.
+            if (IsWalkableLine(path[anchor], path[i + 1]))
+            {
+                continue;
+            }
+
+            smoothed.Add(path[i]);
+            anchor = i;
+        }
+
+        smoothed.Add(path[^1]);
+
+        return smoothed;
+    }
+
+    // Whether an ant can walk the straight line between two cells.
+    //
+    // Two conditions, and the second is the one that matters: every cell stepped through has to be
+    // safely standable, AND the line has to descend or climb no faster than one row per column.
+    // That second rule is the no-climbing constraint restated - MoveDirections has no vertical
+    // entry, so a shortcut steeper than 45 degrees would be a move the ant is not allowed to make,
+    // however open the ground between the ends happens to be.
+    // Exposed so the tests can assert the property directly against a simplified route.
+    public bool IsWalkableLineForTest(Vector2I from, Vector2I to) => IsWalkableLine(from, to);
+
+    private bool IsWalkableLine(Vector2I from, Vector2I to)
+    {
+        Vector2I delta = to - from;
+        int steps = Mathf.Max(Mathf.Abs(delta.X), Mathf.Abs(delta.Y));
+
+        if (steps == 0)
+        {
+            return true;
+        }
+
+        if (Mathf.Abs(delta.Y) > Mathf.Abs(delta.X))
+        {
+            return false;
+        }
+
+        // Walked in whole cells so the check sees exactly the cells the ant will pass through.
+        for (int step = 1; step <= steps; step++)
+        {
+            Vector2I cell = new Vector2I(
+                from.X + Mathf.RoundToInt(delta.X * step / (float)steps),
+                from.Y + Mathf.RoundToInt(delta.Y * step / (float)steps));
+
+            if (!IsSafelyStandable(cell))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

@@ -37,6 +37,7 @@ public partial class TerrainTests : Node
         DiggingLeavesCleanTunnels();
         NestWallsCementThemselves();
         RoomsCanBePlacedAndFinished();
+        SmoothedRoutesStayWalkable();
         DugCorridorsStayWalkable();
         SaveRoundTripRebuildsTheWorld();
 
@@ -417,9 +418,14 @@ public partial class TerrainTests : Node
         Vector2I from = nest;
         Vector2I to = grid.FindSpoilDropOff(nest);
 
-        List<Vector2I> before = grid.FindTunnelPath(from, to);
+        // Expanded to the cells the route actually crosses. Routes are simplified down to their
+        // corners now, so the returned list is no longer every cell she walks over - a mid-point
+        // taken from it straight would often be an endpoint, and "does the route contain the lava
+        // tile" would miss a segment that passes straight over it.
+        List<Vector2I> before = ExpandRoute(grid.FindTunnelPath(from, to));
 
-        Check(before != null && before.Count > 2, "the test route is walkable before any lava");
+        Check(before != null && before.Count > 2, "the test route is walkable before any lava",
+            $"{before?.Count ?? 0} cells crossed");
 
         if (before == null || before.Count <= 2)
         {
@@ -435,7 +441,7 @@ public partial class TerrainTests : Node
 
         // A null route is a pass, not a failure: if the only way through is the flooded cell, then
         // there genuinely is no way through, and saying so is better than marching her into it.
-        List<Vector2I> after = grid.FindTunnelPath(from, to);
+        List<Vector2I> after = ExpandRoute(grid.FindTunnelPath(from, to));
 
         Check(after == null || !after.Contains(blocked), "no route is planned through lava");
 
@@ -750,6 +756,89 @@ public partial class TerrainTests : Node
         Check(placed.State == Room.RoomState.Active, "furnishing activates the room");
         Check(colony.Capacity > capacityBefore, "an activated nesting chamber raises the population cap",
             $"{capacityBefore} -> {colony.Capacity}");
+    }
+
+    // Routes are simplified before an ant walks them: waypoints she does not have to turn at get
+    // dropped, so a staircase becomes a glide. The danger is that a shortcut describes a move the
+    // ant is not allowed to make.
+    //
+    // Ants walk, they do not climb - MoveDirections has no vertical entry, so elevation only ever
+    // changes alongside horizontal movement. A simplified segment steeper than 45 degrees would be
+    // a climb however open the ground between its ends happens to be, and the ant would either stall
+    // against it or slide up a wall. That is the thing this guards.
+    private void SmoothedRoutesStayWalkable()
+    {
+        Vector2I nest = grid.NestCenterCell;
+        Vector2I dropOff = grid.FindSpoilDropOff(nest);
+
+        List<Vector2I> route = grid.FindTunnelPath(nest, dropOff);
+
+        Check(route != null && route.Count >= 2, "there is a route to simplify", $"{route?.Count ?? 0} cells");
+
+        if (route == null || route.Count < 2)
+        {
+            return;
+        }
+
+        Check(route[0] == nest && route[^1] == dropOff, "simplifying keeps both ends of the route",
+            $"{route[0]} .. {route[^1]}");
+
+        int climbs = 0;
+
+        for (int i = 1; i < route.Count; i++)
+        {
+            Vector2I step = route[i] - route[i - 1];
+
+            if (Mathf.Abs(step.Y) > Mathf.Abs(step.X))
+            {
+                climbs++;
+            }
+        }
+
+        Check(climbs == 0, "no simplified segment climbs faster than it walks",
+            $"{climbs} of {route.Count - 1} segments are steeper than 45 degrees");
+
+        // And every cell a segment passes over has to be somewhere she could stand, or the shortcut
+        // is cutting a corner through rock.
+        int unwalkable = 0;
+
+        for (int i = 1; i < route.Count; i++)
+        {
+            if (!grid.IsWalkableLineForTest(route[i - 1], route[i]))
+            {
+                unwalkable++;
+            }
+        }
+
+        Check(unwalkable == 0, "every simplified segment stays on standable ground",
+            $"{unwalkable} segments cross ground she cannot walk");
+    }
+
+    // Every cell a route passes over, not just the corners it turns at.
+    private List<Vector2I> ExpandRoute(List<Vector2I> route)
+    {
+        if (route == null)
+        {
+            return null;
+        }
+
+        var cells = new List<Vector2I> { route[0] };
+
+        for (int i = 1; i < route.Count; i++)
+        {
+            Vector2I from = route[i - 1];
+            Vector2I delta = route[i] - from;
+            int steps = Mathf.Max(Mathf.Abs(delta.X), Mathf.Abs(delta.Y));
+
+            for (int step = 1; step <= steps; step++)
+            {
+                cells.Add(new Vector2I(
+                    from.X + Mathf.RoundToInt(delta.X * step / (float)steps),
+                    from.Y + Mathf.RoundToInt(delta.Y * step / (float)steps)));
+            }
+        }
+
+        return cells;
     }
 
     private int CountAround(Vector2I tile, int radius, MaterialId want)
