@@ -36,6 +36,7 @@ public partial class TerrainTests : Node
         GrassBurnsAndStaysOnTheSurface();
         DiggingLeavesCleanTunnels();
         NestWallsCementThemselves();
+        RoomsCanBePlacedAndFinished();
         DugCorridorsStayWalkable();
         SaveRoundTripRebuildsTheWorld();
 
@@ -671,6 +672,84 @@ public partial class TerrainTests : Node
         Check(CountAround(witness, 1, MaterialId.HardenedDirt) >= hardenedBefore,
             "hardened earth does not shake loose when you dig beside it",
             $"{hardenedBefore} became {CountAround(witness, 1, MaterialId.HardenedDirt)}");
+    }
+
+    // Rooms are the whole progression: they are the only thing that raises the colony's ceilings.
+    // None of this was covered, and four separate faults had stacked up in it unnoticed - a footprint
+    // containing any rock was rejected, oversized drags were rejected, both silently; excavation
+    // never completed because the cells reported as dug through a signal that no longer fired; and
+    // furnishing was starved because foraging is checked first and practically never fails.
+    private void RoomsCanBePlacedAndFinished()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+
+        Vector2I origin = grid.NestCenterCell + new Vector2I(80, 8);
+
+        // Clear ground to build on, and a rock in the middle of it. Rooms have to cope with stone
+        // inside the outline rather than refusing the whole placement.
+        for (int y = 0; y < 2; y++)
+        {
+            for (int x = 0; x < 3; x++)
+            {
+                grid.Dig(origin + new Vector2I(x, y));
+            }
+        }
+
+        grid.SetTileFromSimulation(origin + new Vector2I(3, 0), GridManager.TileType.Rock);
+        grid.SetTileFromSimulation(origin + new Vector2I(3, 1), GridManager.TileType.Rock);
+
+        int capacityBefore = colony.Capacity;
+        colony.AddFood(200);
+
+        build.TryCreateRoom(new Rect2I(origin, new Vector2I(4, 2)), BuildingType.NestingChamber);
+
+        Room placed = null;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is Room room && room.Footprint.Position == origin)
+            {
+                placed = room;
+            }
+        }
+
+        Check(placed != null, "a room can be placed on ground that contains rock");
+
+        if (placed == null)
+        {
+            return;
+        }
+
+        // Counted from the terrain rather than assumed. Generation puts rock wherever it likes, so
+        // the two cells forced to stone above are a minimum, not the total.
+        int rock = 0;
+
+        for (int y = 0; y < 2; y++)
+        {
+            for (int x = 0; x < 4; x++)
+            {
+                if (grid.GetTileAt(origin + new Vector2I(x, y)) == GridManager.TileType.Rock)
+                {
+                    rock++;
+                }
+            }
+        }
+
+        Check(rock >= 2, "the test patch really does contain rock", $"{rock} rock cells");
+        Check(placed.CellCount == 8 - rock, "rock inside the outline is not counted as part of the room",
+            $"claimed {placed.CellCount} cells with {rock} of eight under stone");
+
+        // Everything it needs was already open, so it should be past excavating immediately.
+        Check(placed.State != Room.RoomState.Excavating, "a room dug out in advance needs no further excavation",
+            $"state is {placed.State}");
+
+        // Furnishing is what an ant does on arrival; drive it directly rather than waiting on one.
+        build.ReportFurnishDone(placed);
+
+        Check(placed.State == Room.RoomState.Active, "furnishing activates the room");
+        Check(colony.Capacity > capacityBefore, "an activated nesting chamber raises the population cap",
+            $"{capacityBefore} -> {colony.Capacity}");
     }
 
     private int CountAround(Vector2I tile, int radius, MaterialId want)

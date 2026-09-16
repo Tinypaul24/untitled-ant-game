@@ -414,17 +414,22 @@ public partial class AntWorker : Area2D
             return;
         }
 
+        // Finishing a room the player asked for and paid for comes before foraging.
+        //
+        // It used to come after, and foraging practically never fails - the world is full of food, so
+        // there was always somewhere to go. Rooms reached the furnishing stage and sat there forever
+        // while every worker wandered off to fetch another seed.
+        if (buildManager.TryClaimFurnishJob(Position, out Room room))
+        {
+            CommandBuild(room);
+            return;
+        }
+
         // Food is the one thing the colony always needs, and nobody else is going to fetch it. An idle
         // worker goes looking rather than milling about, which is what lets the colony feed itself.
         if (gridManager.TryFindForageTarget(Position, ForageSearchRadius, out Vector2I food))
         {
             CommandForage(food);
-            return;
-        }
-
-        if (buildManager.TryClaimFurnishJob(Position, out Room room))
-        {
-            CommandBuild(room);
             return;
         }
 

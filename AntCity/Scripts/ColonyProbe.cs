@@ -84,9 +84,10 @@ public partial class ColonyProbe : Node
             step = 2;
 
             Rect2I footprint = new Rect2I(ChamberTopLeft(), new Vector2I(ChamberWide, ChamberTall));
-            build.TryCreateRoom(footprint, BuildingType.Nursery);
 
-            GD.Print($"  [player] placed a nursery over {footprint}  (food {colony.Food})");
+            build.TryCreateRoom(footprint, BuildingType.NestingChamber);
+
+            GD.Print($"  [player] placed a nesting chamber over {footprint}  (food {colony.Food})");
         }
 
         if (step == 2 && elapsed > 90)
@@ -98,7 +99,7 @@ public partial class ColonyProbe : Node
         }
     }
 
-    private const int ChamberWide = 5;
+    private const int ChamberWide = 4;
     private const int ChamberTall = 2;
 
     private Vector2I ChamberTopLeft() => grid.NestCenterCell + new Vector2I(-2, 6);
@@ -149,7 +150,18 @@ public partial class ColonyProbe : Node
             breakdown += $"{entry.Key}:{entry.Value} ";
         }
 
+        string rooms = "";
+
+        foreach (Node child in main.GetChildren())
+        {
+            if (child is Room room)
+            {
+                rooms += $"{room.Type}:{room.State}({room.PendingDigCells.Count} left) ";
+            }
+        }
+
         GD.Print($"t={elapsed:F0}s  ants={ants}/{colony.Capacity}  food={colony.Food}/{colony.FoodCapacity}  " +
+                 $"rooms=[{rooms.Trim()}]  " +
                  $"eggs={colony.Egg} larvae={colony.LarvaCount}  upkeep/hr={colony.UpkeepPerHour}  " +
                  $"dug={CountTunnels() - startingTunnels}  [{breakdown.Trim()}]");
     }

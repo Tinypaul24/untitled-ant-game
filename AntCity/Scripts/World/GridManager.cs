@@ -228,6 +228,16 @@ public partial class GridManager : Node2D
     [Signal]
     public delegate void CellDugEventHandler(Vector2I cell);
 
+    // A cell that has become walkable, however it happened.
+    //
+    // Distinct from CellDug, which means specifically "an ant dug this" and drives the material grid.
+    // Job bookkeeping needs the broader question, because a tile can open without anyone finishing a
+    // dig on it: the material simulation derives a tile passable once half its cells are gone, which
+    // chipping reaches a grain before the last one. Rooms waiting on those cells were never told they
+    // had been excavated and sat unfinished forever.
+    [Signal]
+    public delegate void CellOpenedEventHandler(Vector2I cell);
+
     // Fired for each chip short of breaking through, so the material simulation can erode the tile
     // gradually instead of it staying whole until the final blow.
     [Signal]
@@ -279,6 +289,7 @@ public partial class GridManager : Node2D
         }
 
         EmitSignal("CellDug", cell);
+        EmitSignal(SignalName.CellOpened, cell);
         EmitSignal(SignalName.TerrainChanged);
     }
 
@@ -314,6 +325,11 @@ public partial class GridManager : Node2D
         if (previous == TileType.Tunnel && !IsWalkable(type))
         {
             EmitSignal(SignalName.TileObstructed, cell);
+        }
+
+        if (!IsWalkable(previous) && IsWalkable(type))
+        {
+            EmitSignal(SignalName.CellOpened, cell);
         }
 
         EmitSignal(SignalName.TerrainChanged);
