@@ -28,10 +28,14 @@ public partial class AntWorker : Area2D
     // How far afield an idle worker will look for something to forage, in world units.
     private const float ForageSearchRadius = 24f * 16f;
     // Each dig tick scrapes out a share of the cell; a full load is three cells worth, matching the old haul cadence.
-    private const int GrainsPerDigTick = ParticleField.SlotsPerCell / GridManager.GrainsPerCell;
-    private const int HaulCapacityGrains = ParticleField.SlotsPerCell * 3;
+    private const int GrainsPerDigTick = MaterialWorld.CellsPerTile / GridManager.GrainsPerCell;
+    private const int HaulCapacityGrains = MaterialWorld.CellsPerTile * 3;
     private const int MaxCarriedSpecksDrawn = 6;
     private const int CarriedSpecksPerRow = 3;
+    // How often a worker checks the ground under her for danger.
+    private const double HazardCheckSeconds = 0.25;
+    // How close something harmful has to get before she drops everything and moves.
+    private const int HazardReactionCells = 1;
     private const float MouthOffset = 6f;
     private const float CarriedSpeckSize = 2f;
 
@@ -51,7 +55,7 @@ public partial class AntWorker : Area2D
     private SelectionManager selectionManager;
     private BuildManager buildManager;
     private ColonyManager colonyManager;
-    private ParticleField particleField;
+    private MaterialWorld materialWorld;
 
     private State state = State.Idle;
     private bool isSelected;
@@ -64,9 +68,10 @@ public partial class AntWorker : Area2D
     private bool hasDigJob;
     private Vector2I pendingDigCell;
     private Action pendingDigCallback;
+    private double hazardCheckTimer;
     private Vector2I? forageTarget;
     private int carriedFood;
-    private readonly List<GridManager.TileType> carriedGrains = new();
+    private readonly List<MaterialId> carriedGrains = new();
     private Room pendingRoom;
     private Vector2I? claimedJobCell;
     private Queue<Vector2I> plannedDigRoute = new Queue<Vector2I>();
@@ -85,7 +90,7 @@ public partial class AntWorker : Area2D
         selectionManager = GetNode<SelectionManager>("../SelectionManager");
         buildManager = GetNode<BuildManager>("../BuildManager");
         colonyManager = GetNode<ColonyManager>("../ColonyManager");
-        particleField = GetNode<ParticleField>("../ParticleField");
+        materialWorld = GetNode<MaterialWorld>("../MaterialWorld");
 
         digTimer.OneShot = true;
         digTimer.WaitTime = DigSecondsPerGrain;
@@ -109,6 +114,24 @@ public partial class AntWorker : Area2D
 
     public override void _Process(double delta)
     {
+        // Danger travels on its own. A worker who is mid-dig, foraging or simply standing idle can
+        // have lava reach her without ever taking a step, so checking only as she moves would miss
+        // every case where the flow does the moving. On a timer rather than per frame: it costs a
+        // material lookup, and nothing in the simulation spreads fast enough to need more than this.
+        hazardCheckTimer += delta;
+
+        if (hazardCheckTimer >= HazardCheckSeconds)
+        {
+            hazardCheckTimer = 0;
+
+            // Reacts to danger arriving beside her, not just under her. Waiting to be engulfed is
+            // too late when the flow moves several times faster than she walks.
+            if (gridManager.IsHazardNear(gridManager.WorldToCell(Position), HazardReactionCells))
+            {
+                FleeHazard();
+            }
+        }
+
         if (state != State.Walking)
         {
             return;
@@ -200,7 +223,7 @@ public partial class AntWorker : Area2D
             ForageTargetY = forageTarget?.Y ?? 0,
         };
 
-        foreach (GridManager.TileType material in carriedGrains)
+        foreach (MaterialId material in carriedGrains)
         {
             save.CarriedGrains.Add((int)material);
         }
@@ -243,7 +266,7 @@ public partial class AntWorker : Area2D
 
         foreach (int material in save.CarriedGrains)
         {
-            carriedGrains.Add((GridManager.TileType)material);
+            carriedGrains.Add((MaterialId)material);
         }
 
         if (save.Selected)
@@ -297,7 +320,7 @@ public partial class AntWorker : Area2D
                 - new Vector2(CarriedSpeckSize, CarriedSpeckSize) / 2f;
 
             // Sample across the load so a mixed haul shows the materials it is actually made of.
-            Color color = ParticleField.ColorFor(carriedGrains[i * carriedGrains.Count / specks]);
+            Color color = MaterialDatabase.Get(carriedGrains[i * carriedGrains.Count / specks]).Colour;
 
             DrawRect(new Rect2(offset, new Vector2(CarriedSpeckSize, CarriedSpeckSize)), color, filled: true);
         }
@@ -472,6 +495,61 @@ public partial class AntWorker : Area2D
             return;
         }
 
+        Vector2I next = pendingPath.Peek();
+
+        // Routes are planned around hazards, but the ground moves: lava flows and acid spreads long
+        // after a path was worked out. Re-checking the one cell she is about to step into catches
+        // that for the cost of a single lookup, and is the difference between a worker walking into
+        // a flow and walking away from one.
+        if (gridManager.IsHazardous(next))
+        {
+            FleeHazard();
+            return;
+        }
+
+        moveTarget = gridManager.CellToWorld(pendingPath.Dequeue());
+        state = State.Walking;
+    }
+
+    // Drops whatever she was doing and walks to the nearest safe footing.
+    //
+    // The job is abandoned rather than resumed afterwards: the world has changed enough that the
+    // plan behind it is stale, and she picks up work again from wherever she ends up.
+    private void FleeHazard()
+    {
+        Vector2I here = gridManager.WorldToCell(Position);
+        Vector2I refuge = gridManager.FindNearestSafeCell(here);
+
+        // Nowhere to go. Worked out before anything is torn down on purpose - this runs on a timer,
+        // and an ant with no way out would otherwise abandon her job and restart her wander every
+        // time it fired, which is a lot of churn to express "she is stuck".
+        if (refuge == here)
+        {
+            return;
+        }
+
+        StopCurrentTask();
+        AbandonCurrentJob();
+
+        pendingPath.Clear();
+        plannedDigRoute.Clear();
+        onPathComplete = null;
+
+        List<Vector2I> escape = gridManager.FindTunnelPath(here, refuge);
+
+        // A path may not exist: FindTunnelPath refuses to route through danger, and she is standing
+        // in it. The refuge is adjacent in that case, so step straight at it - hesitating inside a
+        // flow to look for a prettier route is worse than the route.
+        pendingPath = escape != null
+            ? new Queue<Vector2I>(escape)
+            : new Queue<Vector2I>(new[] { refuge });
+
+        onPathComplete = () =>
+        {
+            wanderHome = Position;
+            GoIdle();
+        };
+
         moveTarget = gridManager.CellToWorld(pendingPath.Dequeue());
         state = State.Walking;
     }
@@ -535,18 +613,18 @@ public partial class AntWorker : Area2D
     private void OnDigTimeout()
     {
         // Read the material before the cell can flip to open tunnel on the final tick.
-        GridManager.TileType material = gridManager.GetTileAt(pendingDigCell);
+        MaterialId material = materialWorld.GetTileMaterial(pendingDigCell);
         Vector2I standingCell = gridManager.WorldToCell(Position);
 
         bool cellOpened = gridManager.DigGrain(pendingDigCell);
 
         // Loose soil only exists while the dirt simulation is switched on. With it off, a dig simply
         // opens the cell and there is nothing to carry, so no hauling trips happen at all.
-        if (particleField.Enabled)
+        if (materialWorld.HaulingEnabled)
         {
             // The scraped-out material tumbles onto the floor at her feet. Anything with nowhere to
             // land (she is walled in, or the floor is already heaped up) goes onto her back instead.
-            int spilled = particleField.Emit(standingCell, GrainsPerDigTick, material);
+            int spilled = materialWorld.EmitInto(standingCell, GrainsPerDigTick, material);
 
             for (int i = spilled; i < GrainsPerDigTick && carriedGrains.Count < HaulCapacityGrains; i++)
             {
@@ -600,7 +678,7 @@ public partial class AntWorker : Area2D
     {
         int room = HaulCapacityGrains - carriedGrains.Count;
 
-        if (room > 0 && particleField.Collect(cell, room, carriedGrains) > 0)
+        if (room > 0 && materialWorld.Collect(cell, room, carriedGrains) > 0)
         {
             QueueRedraw();
         }
@@ -610,7 +688,7 @@ public partial class AntWorker : Area2D
     {
         if (carriedGrains.Count > 0)
         {
-            particleField.Release(gridManager.WorldToCell(Position), carriedGrains);
+            materialWorld.Release(gridManager.WorldToCell(Position), carriedGrains);
             QueueRedraw();
         }
     }
@@ -631,7 +709,7 @@ public partial class AntWorker : Area2D
             // instead of burying the hauler or growing back across the way she came in.
             int awayFromNest = arrived.X < gridManager.NestCenterCell.X ? -1 : 1;
 
-            particleField.Release(arrived + new Vector2I(awayFromNest, 0), carriedGrains);
+            materialWorld.Release(arrived + new Vector2I(awayFromNest, 0), carriedGrains);
             QueueRedraw();
             afterDump();
         });

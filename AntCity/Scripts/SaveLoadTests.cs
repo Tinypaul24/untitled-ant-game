@@ -34,10 +34,94 @@ public partial class SaveLoadTests : Node
         PauseMenuFreezesAndResumes();
         PauseMenuButtonsSaveAndLoad();
         SaveListHoldsEveryColony();
+        SimulatedMatterComesBack();
 
         DiscardSavesMadeByTheseTests();
 
         GD.Print($"--- {passed} passed, {failed} failed ---");
+    }
+
+
+    // The material grid is now the source of truth for matter, so a reload has to bring back the
+    // sand, liquids and heat as well as the tiles. Chunks are run-length encoded on the way out,
+    // which is exactly the sort of thing that round-trips wrong without a test.
+    private void SimulatedMatterComesBack()
+    {
+        MaterialWorld materials = main.GetNode<MaterialWorld>("MaterialWorld");
+
+        Vector2I tile = grid.NestCenterCell + new Vector2I(3, 0);
+        Vector2I origin = MaterialWorld.TileToCellOrigin(tile);
+
+        // Photographed before anything is written, so the tile can be put back exactly as it was.
+        // These tests share one world with the terrain tests that run after them, and this tile is
+        // three steps from the nest - leaving lava sitting in it used to be merely untidy, but now
+        // that routes avoid hazards it silently moves where ants can walk.
+        var original = new List<MaterialId>();
+
+        for (int i = 0; i < MaterialWorld.CellsPerTile; i++)
+        {
+            original.Add(materials.GetCell(origin + new Vector2I(i % MaterialWorld.CellsPerTileAxis, i / MaterialWorld.CellsPerTileAxis)));
+        }
+
+        // A deliberately mixed tile: run-length encoding is at its most fragile where runs are short.
+        materials.SetCell(origin, MaterialId.Sand);
+        materials.SetCell(origin + new Vector2I(1, 0), MaterialId.Water);
+        materials.SetCell(origin + new Vector2I(2, 0), MaterialId.Sand);
+        materials.SetCell(origin + new Vector2I(3, 0), MaterialId.Oil);
+        materials.SetCell(origin + new Vector2I(0, 1), MaterialId.Lava);
+
+        MaterialDefinition water = MaterialDatabase.Get(MaterialId.Water);
+        materials.SetTemperature(origin + new Vector2I(1, 0), 64f, water);
+
+        var expected = new List<MaterialId>();
+
+        for (int i = 0; i < 5; i++)
+        {
+            expected.Add(materials.GetCell(origin + new Vector2I(i % 4, i / 4)));
+        }
+
+        Check(saveManager.Save(), "a colony with simulated matter can be saved");
+
+        // Scrub it, so a passing test cannot be the original state simply never having been touched.
+        for (int y = 0; y < MaterialWorld.CellsPerTileAxis; y++)
+        {
+            for (int x = 0; x < MaterialWorld.CellsPerTileAxis; x++)
+            {
+                materials.SetCell(origin + new Vector2I(x, y), MaterialId.Air);
+            }
+        }
+
+        Check(materials.GetCell(origin) == MaterialId.Air, "the matter really was cleared before loading");
+
+        saveManager.Load();
+
+        bool same = true;
+
+        for (int i = 0; i < expected.Count; i++)
+        {
+            if (materials.GetCell(origin + new Vector2I(i % 4, i / 4)) != expected[i])
+            {
+                same = false;
+            }
+        }
+
+        Check(same, "every cell of a mixed tile comes back as it was");
+        Check(
+            Mathf.Abs(materials.GetTemperature(origin + new Vector2I(1, 0), water) - 64f) <= 1f,
+            "a heated cell comes back at its temperature",
+            $"got {materials.GetTemperature(origin + new Vector2I(1, 0), water):0.0}"
+        );
+
+        // Put the tile back. Everything after this shares the same world.
+        for (int i = 0; i < original.Count; i++)
+        {
+            Vector2I cell = origin + new Vector2I(i % MaterialWorld.CellsPerTileAxis, i / MaterialWorld.CellsPerTileAxis);
+
+            materials.SetCell(cell, original[i]);
+            materials.ClearTemperature(cell);
+        }
+
+        materials.DeriveDirtyTiles();
     }
 
     private void DiscardSavesMadeByTheseTests()

@@ -12,8 +12,10 @@
 [ext_resource type="Script" path="res://AntCity/Scripts/Buildings/BuildManager.cs" id="11_build"]
 [ext_resource type="Theme" path="res://AntCity/UI/GameTheme.tres" id="12_theme"]
 [ext_resource type="Script" path="res://AntCity/Scripts/MiniMap.cs" id="13_minimap"]
-[ext_resource type="Script" path="res://AntCity/Scripts/World/ParticleField.cs" id="14_grain"]
 [ext_resource type="Script" path="res://AntCity/Scripts/World/FloorOverlay.cs" id="15_floor"]
+[ext_resource type="Script" path="res://AntCity/Scripts/World/Materials/MaterialWorld.cs" id="16_matworld"]
+[ext_resource type="Script" path="res://AntCity/Scripts/World/Materials/MaterialRenderer.cs" id="17_matrender"]
+[ext_resource type="Script" path="res://AntCity/Scripts/World/Materials/MaterialDebugTool.cs" id="18_matdebug"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_lswqd"]
 texture = ExtResource("3_r1jm0")
@@ -67,9 +69,19 @@ tile_set = SubResource("TileSet_xkah1")
 script = ExtResource("15_floor")
 Grid = NodePath("../GridManager")
 
-[node name="ParticleField" type="Node2D" parent="." node_paths=PackedStringArray("Grid")]
-script = ExtResource("14_grain")
+
+[node name="MaterialWorld" type="Node2D" parent="." node_paths=PackedStringArray("Grid")]
+script = ExtResource("16_matworld")
 Grid = NodePath("../GridManager")
+
+[node name="MaterialRenderer" type="Node2D" parent="." node_paths=PackedStringArray("World")]
+script = ExtResource("17_matrender")
+World = NodePath("../MaterialWorld")
+
+[node name="MaterialDebugTool" type="Node2D" parent="." node_paths=PackedStringArray("World", "Renderer")]
+script = ExtResource("18_matdebug")
+World = NodePath("../MaterialWorld")
+Renderer = NodePath("../MaterialRenderer")
 
 [node name="Queen" parent="." unique_id=1790484239 instance=ExtResource("4_lswqd")]
 position = Vector2(320, 192)

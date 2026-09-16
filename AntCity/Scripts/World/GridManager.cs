@@ -216,6 +216,16 @@ public partial class GridManager : Node2D
     [Signal]
     public delegate void CellDugEventHandler(Vector2I cell);
 
+    // Fired for each chip short of breaking through, so the material simulation can erode the tile
+    // gradually instead of it staying whole until the final blow.
+    [Signal]
+    public delegate void TileChippedEventHandler(Vector2I cell, int removed, int total);
+
+    // Fired when a tunnel the colony dug gets filled in, so the job board can send someone to
+    // clear it rather than the colony quietly walling itself in.
+    [Signal]
+    public delegate void TileObstructedEventHandler(Vector2I cell);
+
     public void Dig(Vector2I cell)
     {
         if (!IsInBounds(cell))
@@ -246,6 +256,41 @@ public partial class GridManager : Node2D
 
     // Chips a single grain out of a solid cell. Returns true once there's nothing left to dig here -
     // either the cell gave up its last grain and became open tunnel, or it was never diggable.
+
+    // Lets the material simulation write terrain back: sand that fills a corridor makes it solid
+    // again, and material scoured away opens it.
+    //
+    // Deliberately never fires CellDug - that signal means "an ant dug this" and drives job bookkeeping.
+    // Callers are expected to have checked the tile is one the simulation owns; food, grass and the
+    // rest are left alone so filling a tunnel can never quietly delete a deposit.
+    public void SetTileFromSimulation(Vector2I cell, TileType type)
+    {
+        if (!IsInBounds(cell))
+        {
+            return;
+        }
+
+        TileType previous = GetTile(cell);
+
+        if (previous == type)
+        {
+            return;
+        }
+
+        grainsRemoved.Remove(cell);
+        SetTile(cell, type);
+
+        // A tunnel the colony dug that has just been filled in is a blockage, not scenery. Sand
+        // sliding down the entrance ramp could otherwise seal the only way in or out with nothing
+        // in the game able to respond to it.
+        if (previous == TileType.Tunnel && !IsWalkable(type))
+        {
+            EmitSignal(SignalName.TileObstructed, cell);
+        }
+
+        EmitSignal(SignalName.TerrainChanged);
+    }
+
     public bool DigGrain(Vector2I cell)
     {
         if (!CanDig(cell))
@@ -262,6 +307,8 @@ public partial class GridManager : Node2D
         }
 
         grainsRemoved[cell] = removed;
+        EmitSignal(SignalName.TileChipped, cell, removed, GrainsPerCell);
+
         return false;
     }
 
@@ -364,7 +411,7 @@ public partial class GridManager : Node2D
             {
                 Vector2I next = current + direction;
 
-                if (visited.Contains(next) || !IsStandable(next))
+                if (visited.Contains(next) || !IsSafelyStandable(next))
                 {
                     continue;
                 }

@@ -11,7 +11,7 @@ using System.Collections.Generic;
 public partial class TerrainTests : Node
 {
     private GridManager grid;
-    private ParticleField field;
+    private MaterialWorld materials;
 
     private int passed;
     private int failed;
@@ -19,13 +19,15 @@ public partial class TerrainTests : Node
     public override void _Ready()
     {
         grid = GetNode<GridManager>("Main/GridManager");
-        field = GetNode<ParticleField>("Main/ParticleField");
+        materials = GetNode<MaterialWorld>("Main/MaterialWorld");
 
         GD.Print("--- terrain tests ---");
 
         StartingWorldIsWalkable();
-        GrainsAreConserved();
+        MatterIsConserved();
         PilesPackIntoSolidGround();
+        SleepBookkeepingStaysHonest();
+        RoutesGoAroundHazards();
         DugCorridorsStayWalkable();
         SaveRoundTripRebuildsTheWorld();
 
@@ -60,50 +62,46 @@ public partial class TerrainTests : Node
         }
     }
 
-    private void GrainsAreConserved()
+    private void MatterIsConserved()
     {
-        Vector2I open = grid.NestCenterCell;
-        int before = field.SettledGrainCount;
+        Vector2I tile = grid.NestCenterCell;
 
-        int emitted = field.Emit(open, 20, GridManager.TileType.Dirt);
+        int before = Count(MaterialId.Sand);
+        int placed = materials.EmitInto(tile, MaterialWorld.CellsPerTile, MaterialId.Sand);
         Settle();
 
-        Check(emitted == 20, "all 20 grains found room", $"placed {emitted}");
+        Check(placed > 0, "sand can be placed into an open tile", $"placed {placed}");
         Check(
-            field.SettledGrainCount - before == emitted && field.FallingGrainCount == 0,
-            "every grain came to rest",
-            $"settled {field.SettledGrainCount - before} of {emitted}, {field.FallingGrainCount} still falling"
+            Count(MaterialId.Sand) - before == placed,
+            "no sand is lost or duplicated while it falls",
+            $"{placed} placed, {Count(MaterialId.Sand) - before} still exist"
         );
     }
 
     private void PilesPackIntoSolidGround()
     {
-        // The simulation ships switched off while the colony is being balanced, so switch it on for
-        // the duration - these tests are about whether it still works when it is on.
-        field.Enabled = true;
-
         Vector2I dropOff = grid.FindSpoilDropOff(grid.NestCenterCell);
 
-        // Tip it beside her on the side away from the nest, exactly as a hauler does.
+        // Tip it beside the drop-off on the side away from the nest, exactly as a hauler does.
         int awayFromNest = dropOff.X < grid.NestCenterCell.X ? -1 : 1;
         Vector2I pile = dropOff + new Vector2I(awayFromNest, 0);
 
-        // Earlier tests leave grains of their own lying about, so measure the change rather than the
-        // total - what matters is that tipping a load on the surface adds nothing to the tunnels.
-        int undergroundBefore = CountUndergroundGrainsNear(pile);
+        // Earlier tests leave material of their own lying about, so measure the change rather than
+        // the total - what matters is that tipping a load on the surface adds nothing to the tunnels.
+        int undergroundBefore = CountUndergroundNear(pile);
         int fed = 0;
 
         for (int load = 0; load < 20; load++)
         {
-            List<GridManager.TileType> carried = new List<GridManager.TileType>();
+            var carried = new List<MaterialId>();
 
-            for (int i = 0; i < ParticleField.SlotsPerCell; i++)
+            for (int i = 0; i < MaterialWorld.CellsPerTile; i++)
             {
-                carried.Add(GridManager.TileType.Dirt);
+                carried.Add(MaterialId.Sand);
             }
 
             fed += carried.Count;
-            field.Release(pile, carried);
+            materials.Release(pile, carried);
             Settle();
         }
 
@@ -120,37 +118,57 @@ public partial class TerrainTests : Node
             }
         }
 
-        int spilledUnderground = CountUndergroundGrainsNear(pile) - undergroundBefore;
+        int spilled = CountUndergroundNear(pile) - undergroundBefore;
 
-        Check(packed > 0, "dumped spoil packs back into solid ground", $"{packed} cells packed from {fed} grains");
-        Check(spilledUnderground <= 0, "tipping a load adds no spoil to the tunnels", $"{spilledUnderground} grains went underground");
+        Check(packed > 0, "dumped spoil packs back into solid ground", $"{packed} tiles solid from {fed} cells");
+        Check(spilled <= 0, "tipping a load adds nothing to the tunnels", $"{spilled} cells went underground");
         Check(grid.IsStandable(grid.FindSpoilDropOff(grid.NestCenterCell)), "a drop-off is still reachable after dumping");
     }
 
-    private int CountUndergroundGrainsNear(Vector2I pile)
+    private int Count(MaterialId want)
     {
-        int count = 0;
+        int total = 0;
+
+        foreach (var entry in materials.Chunks)
+        {
+            foreach (byte cell in entry.Value.Cells)
+            {
+                if ((MaterialId)cell == want)
+                {
+                    total++;
+                }
+            }
+        }
+
+        return total;
+    }
+
+    private int CountUndergroundNear(Vector2I pile)
+    {
+        int total = 0;
 
         for (int y = grid.SurfaceHeight; y < grid.SurfaceHeight + 16; y++)
         {
             for (int x = pile.X - 8; x <= pile.X + 8; x++)
             {
-                Vector2I origin = new Vector2I(x, y) * ParticleField.SlotsPerCellAxis;
+                Vector2I origin = MaterialWorld.TileToCellOrigin(new Vector2I(x, y));
 
-                for (int sx = 0; sx < ParticleField.SlotsPerCellAxis; sx++)
+                for (int cy = 0; cy < MaterialWorld.CellsPerTileAxis; cy++)
                 {
-                    for (int sy = 0; sy < ParticleField.SlotsPerCellAxis; sy++)
+                    for (int cx = 0; cx < MaterialWorld.CellsPerTileAxis; cx++)
                     {
-                        if (field.IsSettledSlot(origin + new Vector2I(sx, sy)))
+                        MaterialKind kind = MaterialDatabase.Get(materials.GetCell(origin + new Vector2I(cx, cy))).Kind;
+
+                        if (kind == MaterialKind.Powder || kind == MaterialKind.Liquid)
                         {
-                            count++;
+                            total++;
                         }
                     }
                 }
             }
         }
 
-        return count;
+        return total;
     }
 
 
@@ -328,14 +346,121 @@ public partial class TerrainTests : Node
         return true;
     }
 
+    // Runs the simulation until it settles, then pushes the result into the tile grid the way a
+    // frame of play would.
+    // The simulation decides what to tick from a maintained set of awake chunks rather than by
+    // scanning them all, which is what makes an idle world free. The failure that buys is silent and
+    // horrible: a chunk that is dirty but missing from the set never gets stepped, so material hangs
+    // in mid-air and nothing points back at the bookkeeping. So check the two agree, both while
+    // things are moving and once everything has settled.
+    private void SleepBookkeepingStaysHonest()
+    {
+        Vector2I tile = grid.NestCenterCell;
+
+        materials.EmitInto(tile, MaterialWorld.CellsPerTile, MaterialId.Sand);
+
+        bool matchedWhileMoving = true;
+
+        for (int tick = 0; tick < 30; tick++)
+        {
+            materials.Simulation.Step();
+            matchedWhileMoving &= materials.AwakeSetMatchesChunks();
+        }
+
+        Check(matchedWhileMoving, "the awake set tracks the chunks while material is moving");
+
+        Settle();
+
+        Check(materials.AwakeSetMatchesChunks(), "the awake set tracks the chunks once everything settles");
+
+        // Not "nothing is awake": a heat source legitimately never sleeps, because it has to keep
+        // pushing warmth into its neighbours, and one stray lava cell from an earlier test is enough
+        // to keep its chunk ticking forever. That is by design and it is bounded - one lava body,
+        // one awake chunk. What must not happen is a chunk staying awake with nothing active in it,
+        // which is what a leak in the wake bookkeeping would look like.
+        int idleButAwake = 0;
+
+        foreach (KeyValuePair<Vector2I, MaterialChunk> entry in materials.Chunks)
+        {
+            if (entry.Value.Awake && !HoldsAHeatSource(entry.Value))
+            {
+                idleButAwake++;
+            }
+        }
+
+        Check(idleButAwake == 0, "nothing stays awake unless something in it is still active",
+            $"{idleButAwake} chunks awake with nothing happening in them");
+    }
+
+    // Ants must not path through anything harmful, and must be able to get out of it if it arrives
+    // around them. Both directions matter: refusing to route into danger is useless on its own if it
+    // also traps a worker who is already standing in a flow, because the rule that keeps her out is
+    // the same rule that would forbid every route she could leave by.
+    private void RoutesGoAroundHazards()
+    {
+        Vector2I nest = grid.NestCenterCell;
+
+        // Built on the nest-to-surface run rather than a corridor dug for the occasion, because that
+        // route is already proven walkable by the first test - a hand-dug one has to satisfy the
+        // no-climbing rules itself, and getting that subtly wrong tests the setup, not the hazard.
+        Vector2I from = nest;
+        Vector2I to = grid.FindSpoilDropOff(nest);
+
+        List<Vector2I> before = grid.FindTunnelPath(from, to);
+
+        Check(before != null && before.Count > 2, "the test route is walkable before any lava");
+
+        if (before == null || before.Count <= 2)
+        {
+            return;
+        }
+
+        Vector2I blocked = before[before.Count / 2];
+        materials.FillTile(blocked, MaterialId.Lava);
+
+        Check(grid.IsHazardous(blocked), "a lava-filled tile reads as hazardous");
+        Check(!grid.IsSafelyStandable(blocked), "nothing is safely standable in lava");
+        Check(grid.IsStandable(blocked), "lava does not make the floor itself vanish");
+
+        // A null route is a pass, not a failure: if the only way through is the flooded cell, then
+        // there genuinely is no way through, and saying so is better than marching her into it.
+        List<Vector2I> after = grid.FindTunnelPath(from, to);
+
+        Check(after == null || !after.Contains(blocked), "no route is planned through lava");
+
+        // And the way out. Standing in it, she has to be offered somewhere better to go.
+        Vector2I refuge = grid.FindNearestSafeCell(blocked);
+
+        Check(refuge != blocked, "an ant caught in lava is offered a way out", $"refuge was {refuge}");
+        Check(grid.IsSafelyStandable(refuge), "the way out leads somewhere actually safe");
+
+        materials.ClearTile(blocked);
+        materials.DeriveDirtyTiles();
+    }
+
+    private static bool HoldsAHeatSource(MaterialChunk chunk)
+    {
+        foreach (byte cell in chunk.Cells)
+        {
+            if (MaterialDatabase.Get((MaterialId)cell).HeatOutput != 0f)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private void Settle()
     {
         const int MaxTicks = 400;
 
-        for (int tick = 0; tick < MaxTicks && field.FallingGrainCount > 0; tick++)
+        for (int tick = 0; tick < MaxTicks; tick++)
         {
-            field.Advance();
+            materials.Simulation.Step();
         }
+
+        materials.DeriveDirtyTiles();
     }
 
     private void Check(bool condition, string name, string detail = "")

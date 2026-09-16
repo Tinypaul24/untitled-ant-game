@@ -33,6 +33,7 @@ public partial class BuildManager : Node2D
     public override void _Ready()
     {
         GridManager.CellDug += OnCellDug;
+        GridManager.TileObstructed += OnTileObstructed;
     }
 
     public void BeginPlacement(BuildingType type)
@@ -50,8 +51,25 @@ public partial class BuildManager : Node2D
     }
 
     // Nearest not-yet-claimed cell that some room still needs dug, if any.
+    // Tunnels that have caved in and need clearing. Kept separate from room work because a blocked
+    // passage can be the only route in or out, so it takes priority over starting the next chamber.
+    private readonly HashSet<Vector2I> obstructions = new();
+
+    private void OnTileObstructed(Vector2I cell)
+    {
+        if (GridManager.CanDig(cell))
+        {
+            obstructions.Add(cell);
+        }
+    }
+
     public bool TryClaimDigJob(Vector2 fromPosition, out Vector2I cell)
     {
+        if (TryClaimNearestObstruction(fromPosition, out cell))
+        {
+            return true;
+        }
+
         cell = default;
         bool found = false;
         float bestDistance = float.MaxValue;
@@ -71,6 +89,7 @@ public partial class BuildManager : Node2D
                 }
 
                 float distance = GridManager.CellToWorld(candidate).DistanceSquaredTo(fromPosition);
+
                 if (distance < bestDistance)
                 {
                     bestDistance = distance;
@@ -87,6 +106,60 @@ public partial class BuildManager : Node2D
 
         return found;
     }
+
+    private bool TryClaimNearestObstruction(Vector2 fromPosition, out Vector2I cell)
+    {
+        cell = default;
+
+        if (obstructions.Count == 0)
+        {
+            return false;
+        }
+
+        bool found = false;
+        float bestDistance = float.MaxValue;
+        List<Vector2I> stale = null;
+
+        foreach (Vector2I candidate in obstructions)
+        {
+            // Something else may have cleared it, or it may have turned into terrain nobody can dig.
+            if (!GridManager.CanDig(candidate))
+            {
+                (stale ??= new List<Vector2I>()).Add(candidate);
+                continue;
+            }
+
+            if (claimedDigCells.Contains(candidate))
+            {
+                continue;
+            }
+
+            float distance = GridManager.CellToWorld(candidate).DistanceSquaredTo(fromPosition);
+
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                cell = candidate;
+                found = true;
+            }
+        }
+
+        if (stale != null)
+        {
+            foreach (Vector2I gone in stale)
+            {
+                obstructions.Remove(gone);
+            }
+        }
+
+        if (found)
+        {
+            claimedDigCells.Add(cell);
+        }
+
+        return found;
+    }
+
 
     // Nearest fully-dug room that still needs an ant to furnish it, if any.
     public bool TryClaimFurnishJob(Vector2 fromPosition, out Room claimedRoom)
@@ -121,6 +194,7 @@ public partial class BuildManager : Node2D
     public void ReleaseClaim(Vector2I cell)
     {
         claimedDigCells.Remove(cell);
+        obstructions.Remove(cell);
     }
 
     public void ReportFurnishDone(Room room)
@@ -267,6 +341,7 @@ public partial class BuildManager : Node2D
     private void OnCellDug(Vector2I cell)
     {
         claimedDigCells.Remove(cell);
+        obstructions.Remove(cell);
 
         if (!roomsByCell.TryGetValue(cell, out Room room) || room.State != Room.RoomState.Excavating)
         {
