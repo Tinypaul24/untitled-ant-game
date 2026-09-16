@@ -32,7 +32,10 @@ public partial class BuildManager : Node2D
 
     public override void _Ready()
     {
-        GridManager.CellDug += OnCellDug;
+        // CellOpened, not CellDug: a room cell can become passable without any ant finishing a dig
+        // on it, and the room still needs to know.
+        GridManager.CellOpened += OnCellDug;
+        GridManager.TileObstructed += OnTileObstructed;
     }
 
     public void BeginPlacement(BuildingType type)
@@ -50,8 +53,25 @@ public partial class BuildManager : Node2D
     }
 
     // Nearest not-yet-claimed cell that some room still needs dug, if any.
+    // Tunnels that have caved in and need clearing. Kept separate from room work because a blocked
+    // passage can be the only route in or out, so it takes priority over starting the next chamber.
+    private readonly HashSet<Vector2I> obstructions = new();
+
+    private void OnTileObstructed(Vector2I cell)
+    {
+        if (GridManager.CanDig(cell))
+        {
+            obstructions.Add(cell);
+        }
+    }
+
     public bool TryClaimDigJob(Vector2 fromPosition, out Vector2I cell)
     {
+        if (TryClaimNearestObstruction(fromPosition, out cell))
+        {
+            return true;
+        }
+
         cell = default;
         bool found = false;
         float bestDistance = float.MaxValue;
@@ -71,6 +91,7 @@ public partial class BuildManager : Node2D
                 }
 
                 float distance = GridManager.CellToWorld(candidate).DistanceSquaredTo(fromPosition);
+
                 if (distance < bestDistance)
                 {
                     bestDistance = distance;
@@ -87,6 +108,60 @@ public partial class BuildManager : Node2D
 
         return found;
     }
+
+    private bool TryClaimNearestObstruction(Vector2 fromPosition, out Vector2I cell)
+    {
+        cell = default;
+
+        if (obstructions.Count == 0)
+        {
+            return false;
+        }
+
+        bool found = false;
+        float bestDistance = float.MaxValue;
+        List<Vector2I> stale = null;
+
+        foreach (Vector2I candidate in obstructions)
+        {
+            // Something else may have cleared it, or it may have turned into terrain nobody can dig.
+            if (!GridManager.CanDig(candidate))
+            {
+                (stale ??= new List<Vector2I>()).Add(candidate);
+                continue;
+            }
+
+            if (claimedDigCells.Contains(candidate))
+            {
+                continue;
+            }
+
+            float distance = GridManager.CellToWorld(candidate).DistanceSquaredTo(fromPosition);
+
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                cell = candidate;
+                found = true;
+            }
+        }
+
+        if (stale != null)
+        {
+            foreach (Vector2I gone in stale)
+            {
+                obstructions.Remove(gone);
+            }
+        }
+
+        if (found)
+        {
+            claimedDigCells.Add(cell);
+        }
+
+        return found;
+    }
+
 
     // Nearest fully-dug room that still needs an ant to furnish it, if any.
     public bool TryClaimFurnishJob(Vector2 fromPosition, out Room claimedRoom)
@@ -121,6 +196,7 @@ public partial class BuildManager : Node2D
     public void ReleaseClaim(Vector2I cell)
     {
         claimedDigCells.Remove(cell);
+        obstructions.Remove(cell);
     }
 
     public void ReportFurnishDone(Room room)
@@ -207,7 +283,23 @@ public partial class BuildManager : Node2D
             GetParent().AddChild(room);
             rooms.Add(room);
 
-            ForEachCell(room.Footprint, cell => roomsByCell[cell] = room);
+            // Recomputed rather than saved. A restored room owns whatever of its outline is open or
+            // diggable now, which is the same answer as when it was placed unless something blasted
+            // the rock out since - and if it did, the room may as well have the space.
+            int owned = 0;
+
+            ForEachCell(room.Footprint, cell =>
+            {
+                if (!IsUsableRoomCell(cell))
+                {
+                    return;
+                }
+
+                roomsByCell[cell] = room;
+                owned++;
+            });
+
+            room.CellCount = owned;
         }
     }
 
@@ -261,12 +353,13 @@ public partial class BuildManager : Node2D
         Vector2 topLeft = new Vector2(footprint.Position.X, footprint.Position.Y) * GridManager.CellSize;
         Vector2 size = new Vector2(footprint.Size.X, footprint.Size.Y) * GridManager.CellSize;
 
-        DrawRect(new Rect2(topLeft, size), IsFootprintValid(footprint) ? ValidPreviewColor : InvalidPreviewColor, filled: true);
+        DrawRect(new Rect2(topLeft, size), IsFootprintValid(footprint, out _) ? ValidPreviewColor : InvalidPreviewColor, filled: true);
     }
 
     private void OnCellDug(Vector2I cell)
     {
         claimedDigCells.Remove(cell);
+        obstructions.Remove(cell);
 
         if (!roomsByCell.TryGetValue(cell, out Room room) || room.State != Room.RoomState.Excavating)
         {
@@ -281,67 +374,138 @@ public partial class BuildManager : Node2D
         }
     }
 
-    private void TryCreateRoom(Rect2I footprint)
+    // Public so tests and probes can place a room without synthesising mouse input. This is the same
+    // path the drag-to-place UI takes, so exercising it exercises the real thing.
+    public void TryCreateRoom(Rect2I footprint, BuildingType? forced = null)
     {
-        if (!IsFootprintValid(footprint))
+        if (!IsFootprintValid(footprint, out string reason))
         {
+            // Said out loud. A placement that just quietly does nothing is indistinguishable from
+            // the build system being broken, which is exactly how it read.
+            ColonyManager.RaiseAlert(reason);
             return;
         }
 
-        BuildingType type = pendingType.Value;
-        int cellCount = footprint.Size.X * footprint.Size.Y;
+        BuildingType type = forced ?? pendingType.Value;
         BuildingDef def = BuildingDefs.All[type];
 
-        if (!ColonyManager.RemoveFood(def.FoodCostPerCell * cellCount))
+        // Only the cells the room will actually occupy. Rock inside the footprint is neither paid
+        // for nor counted towards what the room does, because the room never gets to use it.
+        var roomCells = new List<Vector2I>();
+        ForEachCell(footprint, cell =>
         {
+            if (IsUsableRoomCell(cell))
+            {
+                roomCells.Add(cell);
+            }
+        });
+
+        if (!ColonyManager.RemoveFood(def.FoodCostPerCell * roomCells.Count))
+        {
+            ColonyManager.RaiseAlert($"Not enough food - a {def.Name} that size costs {def.FoodCostPerCell * roomCells.Count}.");
             return;
         }
 
         var pendingCells = new HashSet<Vector2I>();
-        ForEachCell(footprint, cell =>
+
+        foreach (Vector2I cell in roomCells)
         {
             if (!GridManager.IsTunnel(cell))
             {
                 pendingCells.Add(cell);
             }
-        });
+        }
 
         Room room = RoomScene.Instantiate<Room>();
         room.Type = type;
         room.Footprint = footprint;
+        room.CellCount = roomCells.Count;
         room.Initialize(GridManager.CellSize, pendingCells);
         GetParent().AddChild(room);
         rooms.Add(room);
 
-        ForEachCell(footprint, cell => roomsByCell[cell] = room);
+        foreach (Vector2I cell in roomCells)
+        {
+            roomsByCell[cell] = room;
+        }
     }
 
-    private bool IsFootprintValid(Rect2I footprint)
+    // Whether a room can go here, and if not, why not.
+    //
+    // Rock inside the footprint used to fail the whole thing. Underground rock is common enough that
+    // a five-by-two area has about a nine-in-ten chance of containing some, so once the colony began
+    // on bare ground - digging into virgin terrain rather than a pre-cleared chamber - almost every
+    // placement was rejected, silently, with no way to tell why. Rooms now build around stone: those
+    // cells simply are not part of the room.
+    private bool IsFootprintValid(Rect2I footprint, out string reason)
     {
-        if (footprint.Size.X < MinFootprintDimension || footprint.Size.Y < MinFootprintDimension ||
-            footprint.Size.X > MaxFootprintDimension || footprint.Size.Y > MaxFootprintDimension)
+        reason = null;
+
+        if (footprint.Size.X < MinFootprintDimension || footprint.Size.Y < MinFootprintDimension)
         {
+            reason = $"Too small - a room needs to be at least {MinFootprintDimension} by {MinFootprintDimension}.";
             return false;
         }
 
-        bool valid = true;
+        if (footprint.Size.X > MaxFootprintDimension || footprint.Size.Y > MaxFootprintDimension)
+        {
+            reason = $"Too big - a room can be at most {MaxFootprintDimension} by {MaxFootprintDimension}.";
+            return false;
+        }
+
+        bool overlaps = false;
+        bool outOfBounds = false;
+        int usable = 0;
 
         ForEachCell(footprint, cell =>
         {
-            if (!valid || roomsByCell.ContainsKey(cell) || !GridManager.IsInBounds(cell))
+            if (roomsByCell.ContainsKey(cell))
             {
-                valid = false;
+                overlaps = true;
                 return;
             }
 
-            if (!GridManager.IsTunnel(cell) && !GridManager.CanDig(cell))
+            if (!GridManager.IsInBounds(cell))
             {
-                valid = false;
+                outOfBounds = true;
+                return;
+            }
+
+            if (IsUsableRoomCell(cell))
+            {
+                usable++;
             }
         });
 
-        return valid;
+        if (overlaps)
+        {
+            reason = "That overlaps a room you have already placed.";
+            return false;
+        }
+
+        if (outOfBounds)
+        {
+            reason = "That reaches outside the world.";
+            return false;
+        }
+
+        if (usable < MinUsableCells)
+        {
+            reason = "Too much solid rock there - find somewhere softer.";
+            return false;
+        }
+
+        return true;
     }
+
+    // Open ground, or ground an ant could open. Rock is neither, so it stays where it is.
+    private bool IsUsableRoomCell(Vector2I cell)
+    {
+        return GridManager.IsTunnel(cell) || GridManager.CanDig(cell);
+    }
+
+    // Enough of the footprint has to be diggable for the room to be worth anything at all.
+    private const int MinUsableCells = MinFootprintDimension * MinFootprintDimension;
 
     private Rect2I ComputeFootprint(Vector2 worldA, Vector2 worldB)
     {

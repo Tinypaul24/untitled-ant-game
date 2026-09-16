@@ -64,8 +64,49 @@ public partial class ColonyManager : Node
         totalFoodEarned += actuallyAdded;
         EmitSignal(SignalName.ColonyChanged);
 
+        NoteCeilings();
+
         return actuallyAdded;
     }
+
+    // Tells the player when the colony has run into a wall, and which wall.
+    //
+    // Both ceilings are silent by default: a full larder looks exactly like a healthy one, and a
+    // colony at its population cap simply stops growing with no explanation. Watching the game play
+    // itself, it reached both within two minutes and then did nothing whatsoever, which reads as the
+    // game being broken rather than as the game waiting for you to dig.
+    //
+    // Latched, so each is said once and only said again after the colony has climbed off the ceiling.
+    private void NoteCeilings()
+    {
+        if (Food >= FoodCapacity && !warnedStoresFull)
+        {
+            warnedStoresFull = true;
+            RaiseAlert($"Food stores are full at {FoodCapacity}. Dig out a chamber and build a Granary to keep more.");
+        }
+        else if (Food < FoodCapacity * ReArmStoresFullFraction)
+        {
+            warnedStoresFull = false;
+        }
+
+        if (PopulationUsed >= Capacity && !warnedPopulationFull)
+        {
+            warnedPopulationFull = true;
+            RaiseAlert($"The nest is full at {Capacity}. Build a Nesting Chamber to make room for more ants.");
+        }
+        else if (PopulationUsed < Capacity)
+        {
+            warnedPopulationFull = false;
+        }
+    }
+
+    // How far food has to fall before the full-stores warning is worth saying again. Laying an egg
+    // costs two food, so re-arming the moment the larder dips below the brim meant the message
+    // repeated every time the queen laid - a warning that fires constantly is one nobody reads.
+    private const float ReArmStoresFullFraction = 0.8f;
+
+    private bool warnedStoresFull;
+    private bool warnedPopulationFull;
 
     public bool RemoveFood(int amount)
     {
@@ -84,6 +125,8 @@ public partial class ColonyManager : Node
     {
         FoodCapacity += amount;
         EmitSignal(SignalName.ColonyChanged);
+
+        NoteCeilings();
     }
 
     public void AddEgg()
@@ -134,6 +177,8 @@ public partial class ColonyManager : Node
         Ants++;
         EmitSignal(SignalName.ColonyChanged);
 
+        NoteCeilings();
+
         return true;
     }
 
@@ -165,6 +210,8 @@ public partial class ColonyManager : Node
     {
         Capacity += amount;
         EmitSignal(SignalName.ColonyChanged);
+
+        NoteCeilings();
     }
 
     // Every nursery cell (across any number of nursery rooms) chips away at hatch/maturity time, with diminishing returns.

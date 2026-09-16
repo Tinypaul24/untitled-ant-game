@@ -23,7 +23,7 @@ public partial class SaveManager : Node
     private ColonyManager colonyManager;
     private GameClock gameClock;
     private BuildManager buildManager;
-    private ParticleField particleField;
+    private MaterialWorld materialWorld;
     private SelectionManager selectionManager;
     private ColonyUI colonyUI;
     private Camera2D camera;
@@ -37,7 +37,7 @@ public partial class SaveManager : Node
         colonyManager = main.GetNode<ColonyManager>("ColonyManager");
         gameClock = main.GetNode<GameClock>("GameClock");
         buildManager = main.GetNode<BuildManager>("BuildManager");
-        particleField = main.GetNode<ParticleField>("ParticleField");
+        materialWorld = main.GetNode<MaterialWorld>("MaterialWorld");
         selectionManager = main.GetNode<SelectionManager>("SelectionManager");
         colonyUI = main.GetNode<ColonyUI>("UI");
         camera = main.GetNode<Camera2D>("Camera2D");
@@ -291,7 +291,7 @@ public partial class SaveManager : Node
             QueenX = queen.Position.X,
             QueenY = queen.Position.Y,
             Rooms = buildManager.CaptureRooms(),
-            Particles = particleField.CaptureState(),
+            Materials = materialWorld.CaptureState(),
             TimeScale = colonyUI.CurrentSpeed,
             Paused = colonyUI.IsPaused,
         };
@@ -323,7 +323,7 @@ public partial class SaveManager : Node
 
         gridManager.RestoreState(data.World);
         buildManager.RestoreRooms(data.Rooms);
-        particleField.RestoreState(data.Particles);
+        materialWorld.RestoreState(data.Materials);
 
         queen.Position = new Vector2(data.QueenX, data.QueenY);
 

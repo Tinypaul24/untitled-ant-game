@@ -47,6 +47,18 @@ public partial class GridManager : Node2D
     [Export]
     public int NestDepth { get; set; } = 6;
 
+    // Where the colony starts: on the surface, standing on the turf, with nothing dug yet. A colony
+    // begins as a queen who has landed and has to make her own way in, so where the first tunnel
+    // goes is a decision rather than something the world hands over.
+    //
+    // This is the topmost turf row, not the air above it: grass counts as walkable, so an ant stands
+    // on the turf with soil beneath her rather than hovering over it.
+    //
+    // One definition on purpose. It was written out twice - once for a fresh world and once for a
+    // restored one - and the two drifted the moment the colony moved up here, which quietly put
+    // every loaded save back underground.
+    private Vector2I SurfaceNestCell => new Vector2I(0, SurfaceHeight - GrassDepth);
+
     // How many chunks around the nest are generated immediately, so there's ground to see at the start.
     [Export]
     public int InitialRadiusChunks { get; set; } = 4;
@@ -156,7 +168,7 @@ public partial class GridManager : Node2D
     {
         InitializeNoise();
 
-        NestCenterCell = new Vector2I(0, SurfaceHeight + NestDepth);
+        NestCenterCell = SurfaceNestCell;
 
         // Pre-generate enough terrain around the nest to fill the initial view; everything further
         // out is generated on demand as ants path or dig toward it, so the map keeps expanding.
@@ -216,6 +228,26 @@ public partial class GridManager : Node2D
     [Signal]
     public delegate void CellDugEventHandler(Vector2I cell);
 
+    // A cell that has become walkable, however it happened.
+    //
+    // Distinct from CellDug, which means specifically "an ant dug this" and drives the material grid.
+    // Job bookkeeping needs the broader question, because a tile can open without anyone finishing a
+    // dig on it: the material simulation derives a tile passable once half its cells are gone, which
+    // chipping reaches a grain before the last one. Rooms waiting on those cells were never told they
+    // had been excavated and sat unfinished forever.
+    [Signal]
+    public delegate void CellOpenedEventHandler(Vector2I cell);
+
+    // Fired for each chip short of breaking through, so the material simulation can erode the tile
+    // gradually instead of it staying whole until the final blow.
+    [Signal]
+    public delegate void TileChippedEventHandler(Vector2I cell, int removed, int total);
+
+    // Fired when a tunnel the colony dug gets filled in, so the job board can send someone to
+    // clear it rather than the colony quietly walling itself in.
+    [Signal]
+    public delegate void TileObstructedEventHandler(Vector2I cell);
+
     public void Dig(Vector2I cell)
     {
         if (!IsInBounds(cell))
@@ -234,18 +266,75 @@ public partial class GridManager : Node2D
 
         SetTile(cell, TileType.Tunnel);
 
+        // Tunnelling into a food source salvages it rather than throwing it away.
+        //
+        // Food tiles are diggable, so a worker routing a corridor could drive straight through a
+        // seed cache and destroy forty food on her way past - a forager wrecking the very thing she
+        // was sent to collect. Whatever the storehouse cannot take is genuinely spilled, which is
+        // worth saying out loud, because that is a real loss the player can prevent by building.
         if (IsFoodTileType(previous))
         {
+            int salvaged = GetFoodAmount(cell);
             foodRemaining.Remove(cell);
-            GD.Print($"Tunneled through a food source at {cell}, destroying it. Forage it instead to collect its food.");
+
+            if (salvaged > 0 && ColonyManager != null)
+            {
+                int stored = ColonyManager.AddFood(salvaged);
+
+                if (stored < salvaged)
+                {
+                    ColonyManager.RaiseAlert($"Dug through a food source; {salvaged - stored} spilled with nowhere to store it.");
+                }
+            }
         }
 
         EmitSignal("CellDug", cell);
+        EmitSignal(SignalName.CellOpened, cell);
         EmitSignal(SignalName.TerrainChanged);
     }
 
     // Chips a single grain out of a solid cell. Returns true once there's nothing left to dig here -
     // either the cell gave up its last grain and became open tunnel, or it was never diggable.
+
+    // Lets the material simulation write terrain back: sand that fills a corridor makes it solid
+    // again, and material scoured away opens it.
+    //
+    // Deliberately never fires CellDug - that signal means "an ant dug this" and drives job bookkeeping.
+    // Callers are expected to have checked the tile is one the simulation owns; food, grass and the
+    // rest are left alone so filling a tunnel can never quietly delete a deposit.
+    public void SetTileFromSimulation(Vector2I cell, TileType type)
+    {
+        if (!IsInBounds(cell))
+        {
+            return;
+        }
+
+        TileType previous = GetTile(cell);
+
+        if (previous == type)
+        {
+            return;
+        }
+
+        grainsRemoved.Remove(cell);
+        SetTile(cell, type);
+
+        // A tunnel the colony dug that has just been filled in is a blockage, not scenery. Sand
+        // sliding down the entrance ramp could otherwise seal the only way in or out with nothing
+        // in the game able to respond to it.
+        if (previous == TileType.Tunnel && !IsWalkable(type))
+        {
+            EmitSignal(SignalName.TileObstructed, cell);
+        }
+
+        if (!IsWalkable(previous) && IsWalkable(type))
+        {
+            EmitSignal(SignalName.CellOpened, cell);
+        }
+
+        EmitSignal(SignalName.TerrainChanged);
+    }
+
     public bool DigGrain(Vector2I cell)
     {
         if (!CanDig(cell))
@@ -262,6 +351,8 @@ public partial class GridManager : Node2D
         }
 
         grainsRemoved[cell] = removed;
+        EmitSignal(SignalName.TileChipped, cell, removed, GrainsPerCell);
+
         return false;
     }
 
@@ -291,6 +382,17 @@ public partial class GridManager : Node2D
     public List<Vector2I> GetFoodSourceCells()
     {
         return new List<Vector2I>(foodRemaining.Keys);
+    }
+
+    // Fills a caller-owned list instead of handing back a fresh one. The minimap asks for this
+    // often enough that allocating a list of every food cell in the world each time showed up in
+    // the frame budget.
+    public void CollectFoodSourceCells(List<Vector2I> into)
+    {
+        foreach (Vector2I cell in foodRemaining.Keys)
+        {
+            into.Add(cell);
+        }
     }
 
     // The nearest food source no other worker has already gone after.
@@ -364,7 +466,7 @@ public partial class GridManager : Node2D
             {
                 Vector2I next = current + direction;
 
-                if (visited.Contains(next) || !IsStandable(next))
+                if (visited.Contains(next) || !IsSafelyStandable(next))
                 {
                     continue;
                 }
@@ -656,24 +758,23 @@ public partial class GridManager : Node2D
             || type == TileType.Air;
     }
 
+    // Nothing is dug. The colony begins on open ground and digs its own way in.
+    //
+    // All this does is guarantee somewhere to stand: generation can leave the spawn tile covered by
+    // a tree or a berry bush, and ants that cannot climb would have no way off it.
     private void CreateStartingNest()
     {
-        int floorY = NestCenterCell.Y;
-
-        // A tight starting chamber - two rows tall, so ants walk its floor rather than swimming
-        // around inside a big hollow box.
-        for (int x = NestCenterCell.X - 1; x <= NestCenterCell.X + 1; x++)
+        for (int x = NestCenterCell.X - 2; x <= NestCenterCell.X + 2; x++)
         {
-            for (int y = floorY - 1; y <= floorY; y++)
+            Vector2I above = new Vector2I(x, NestCenterCell.Y);
+
+            if (!IsWalkable(GetTile(above)))
             {
-                ForceDig(new Vector2I(x, y));
+                ForceDig(above);
             }
         }
 
-        CarveEntranceRamp(floorY);
-        ClearSurfaceEntrance();
-
-        GD.Print("Starting nest created!");
+        GD.Print("Colony landed on the surface.");
     }
 
     // A zigzag staircase from the chamber up to daylight. Each row steps one cell sideways, so every

@@ -38,7 +38,10 @@ public partial class Room : Node2D
     private HashSet<Vector2I> pendingDigCells;
     private int cellSize;
 
-    public int CellCount => Footprint.Size.X * Footprint.Size.Y;
+    // Cells the room actually occupies, which is not the same as its footprint area: rock inside the
+    // outline is never dug and never becomes part of the room, so it must not be paid for or counted
+    // towards what the room does.
+    public int CellCount { get; set; }
     public bool IsFullyDug => pendingDigCells.Count == 0;
     public IReadOnlyCollection<Vector2I> PendingDigCells => pendingDigCells;
 

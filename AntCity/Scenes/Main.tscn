@@ -12,8 +12,10 @@
 [ext_resource type="Script" path="res://AntCity/Scripts/Buildings/BuildManager.cs" id="11_build"]
 [ext_resource type="Theme" path="res://AntCity/UI/GameTheme.tres" id="12_theme"]
 [ext_resource type="Script" path="res://AntCity/Scripts/MiniMap.cs" id="13_minimap"]
-[ext_resource type="Script" path="res://AntCity/Scripts/World/ParticleField.cs" id="14_grain"]
 [ext_resource type="Script" path="res://AntCity/Scripts/World/FloorOverlay.cs" id="15_floor"]
+[ext_resource type="Script" path="res://AntCity/Scripts/World/Materials/MaterialWorld.cs" id="16_matworld"]
+[ext_resource type="Script" path="res://AntCity/Scripts/World/Materials/MaterialRenderer.cs" id="17_matrender"]
+[ext_resource type="Script" path="res://AntCity/Scripts/World/Materials/MaterialDebugTool.cs" id="18_matdebug"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_lswqd"]
 texture = ExtResource("3_r1jm0")
@@ -67,9 +69,19 @@ tile_set = SubResource("TileSet_xkah1")
 script = ExtResource("15_floor")
 Grid = NodePath("../GridManager")
 
-[node name="ParticleField" type="Node2D" parent="." node_paths=PackedStringArray("Grid")]
-script = ExtResource("14_grain")
+
+[node name="MaterialWorld" type="Node2D" parent="." node_paths=PackedStringArray("Grid")]
+script = ExtResource("16_matworld")
 Grid = NodePath("../GridManager")
+
+[node name="MaterialRenderer" type="Node2D" parent="." node_paths=PackedStringArray("World")]
+script = ExtResource("17_matrender")
+World = NodePath("../MaterialWorld")
+
+[node name="MaterialDebugTool" type="Node2D" parent="." node_paths=PackedStringArray("World", "Renderer")]
+script = ExtResource("18_matdebug")
+World = NodePath("../MaterialWorld")
+Renderer = NodePath("../MaterialRenderer")
 
 [node name="Queen" parent="." unique_id=1790484239 instance=ExtResource("4_lswqd")]
 position = Vector2(320, 192)
@@ -90,12 +102,12 @@ theme = ExtResource("12_theme")
 layout_mode = 1
 anchors_preset = 10
 anchor_right = 1.0
-offset_bottom = 44.0
+offset_bottom = 22.0
 grow_horizontal = 2
 
 [node name="Stats" type="HBoxContainer" parent="UI/ThemeRoot/TopBar" unique_id=1712519324]
 layout_mode = 2
-theme_override_constants/separation = 24
+theme_override_constants/separation = 10
 
 [node name="PopulationBlock" type="VBoxContainer" parent="UI/ThemeRoot/TopBar/Stats"]
 layout_mode = 2
@@ -106,7 +118,7 @@ layout_mode = 2
 text = "🐜 Population: 1/10"
 
 [node name="PopulationBar" type="ProgressBar" parent="UI/ThemeRoot/TopBar/Stats/PopulationBlock"]
-custom_minimum_size = Vector2(130, 8)
+custom_minimum_size = Vector2(58, 4)
 layout_mode = 2
 max_value = 10.0
 value = 1.0
@@ -121,7 +133,7 @@ layout_mode = 2
 text = "🍖 Food: 50/75"
 
 [node name="FoodBar" type="ProgressBar" parent="UI/ThemeRoot/TopBar/Stats/FoodBlock"]
-custom_minimum_size = Vector2(130, 8)
+custom_minimum_size = Vector2(58, 4)
 layout_mode = 2
 max_value = 75.0
 value = 50.0
@@ -138,11 +150,11 @@ anchors_preset = 12
 anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_top = -80.0
-offset_bottom = -44.0
+offset_top = -40.0
+offset_bottom = -22.0
 grow_horizontal = 2
 grow_vertical = 0
-theme_override_constants/separation = 10
+theme_override_constants/separation = 4
 
 [node name="NestingChamberButton" type="Button" parent="UI/ThemeRoot/BuildTray"]
 layout_mode = 2
@@ -158,13 +170,13 @@ anchors_preset = 12
 anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_top = -44.0
+offset_top = -22.0
 grow_horizontal = 2
 grow_vertical = 0
 
 [node name="Actions" type="HBoxContainer" parent="UI/ThemeRoot/BottomBar"]
 layout_mode = 2
-theme_override_constants/separation = 20
+theme_override_constants/separation = 8
 
 [node name="LayingButton" type="Button" parent="UI/ThemeRoot/BottomBar/Actions" unique_id=1288401762]
 layout_mode = 2
@@ -180,15 +192,15 @@ text = "Build"
 anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -320.0
-offset_top = 52.0
-offset_right = -120.0
-offset_bottom = 76.0
+offset_left = -192.0
+offset_top = 25.0
+offset_right = -56.0
+offset_bottom = 41.0
 grow_horizontal = 0
 
 [node name="SpeedButtons" type="HBoxContainer" parent="UI/ThemeRoot/SpeedPanel"]
 layout_mode = 2
-theme_override_constants/separation = 4
+theme_override_constants/separation = 2
 
 [node name="PauseButton" type="Button" parent="UI/ThemeRoot/SpeedPanel/SpeedButtons"]
 layout_mode = 2
@@ -225,10 +237,10 @@ text = "4x"
 anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -110.0
-offset_top = 52.0
-offset_right = -10.0
-offset_bottom = 76.0
+offset_left = -52.0
+offset_top = 27.0
+offset_right = -4.0
+offset_bottom = 39.0
 grow_horizontal = 0
 text = "00:00"
 horizontal_alignment = 2
@@ -237,10 +249,10 @@ horizontal_alignment = 2
 anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -140.0
-offset_top = 82.0
-offset_right = -10.0
-offset_bottom = 212.0
+offset_left = -70.0
+offset_top = 45.0
+offset_right = -4.0
+offset_bottom = 111.0
 grow_horizontal = 0
 
 [node name="MiniMap" type="Control" parent="UI/ThemeRoot/MiniMapPanel" node_paths=PackedStringArray("GridManager")]
@@ -254,10 +266,10 @@ visible = false
 anchors_preset = 5
 anchor_left = 0.5
 anchor_right = 0.5
-offset_left = -160.0
-offset_top = 52.0
-offset_right = 160.0
-offset_bottom = 80.0
+offset_left = -80.0
+offset_top = 26.0
+offset_right = 80.0
+offset_bottom = 42.0
 grow_horizontal = 2
 
 [node name="ToastLabel" type="Label" parent="UI/ThemeRoot/ToastPanel"]

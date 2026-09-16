@@ -39,7 +39,7 @@ public partial class GridManager : Node2D
         Ground.Clear();
 
         InitializeNoise(save.Seed);
-        NestCenterCell = new Vector2I(0, SurfaceHeight + NestDepth);
+        NestCenterCell = SurfaceNestCell;
 
         foreach (Vector2I chunk in save.Chunks.ReadCells())
         {

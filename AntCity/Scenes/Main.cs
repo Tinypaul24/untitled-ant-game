@@ -2,10 +2,6 @@ using Godot;
 
 public partial class Main : Node2D
 {
-    private const int StartingAntWorkers = 3;
-
-    private static readonly PackedScene AntWorkerScene = GD.Load<PackedScene>("res://AntCity/Scenes/Entities/AntWorker.tscn");
-
     public override void _Ready()
     {
         GD.Print("Ant City has started!");
@@ -15,28 +11,14 @@ public partial class Main : Node2D
 
         GridManager gridManager = GetNode<GridManager>("GridManager");
         Camera2D camera = GetNode<Camera2D>("Camera2D");
-        Node2D queen = GetNode<Node2D>("Queen");
-        ColonyManager colonyManager = GetNode<ColonyManager>("ColonyManager");
 
-        Vector2 nestWorldPosition = gridManager.CellToWorld(gridManager.NestCenterCell);
-        camera.Position = nestWorldPosition;
+        // Pointed at the landing site before anything happens, so the queen flies in from off the
+        // edge of the view rather than appearing in the middle of it.
+        camera.Position = gridManager.CellToWorld(gridManager.NestCenterCell);
         camera.MakeCurrent();
-        queen.Position = nestWorldPosition;
 
-        // Spread the starting workers along the chamber floor. Ants cannot climb, so they have to
-        // begin somewhere they can actually stand.
-        for (int i = 0; i < StartingAntWorkers; i++)
-        {
-            if (!colonyManager.AddAnt())
-            {
-                break;
-            }
-
-            Vector2I spawnCell = gridManager.FindNearestTunnelCell(gridManager.NestCenterCell + new Vector2I(i - 1, 0));
-
-            Node2D ant = AntWorkerScene.Instantiate<Node2D>();
-            ant.Position = gridManager.CellToWorld(spawnCell);
-            AddChild(ant);
-        }
+        // The queen, the first shaft and the starting workers are all its business now. Spawning
+        // them here meant the game opened on a chamber nobody dug and three ants nobody sent.
+        AddChild(new ColonyFounding { Name = "ColonyFounding" });
     }
 }

@@ -26,6 +26,54 @@ public partial class GridManager : Node2D
         new Vector2I(1, 1)    // Ramp down-right
     };
 
+    // What makes a cell lethal to stand in. Injected by MaterialWorld rather than called directly,
+    // so navigation does not have to know the material system exists and still works - treating the
+    // world as entirely safe - in a scene that has no simulation in it, which is what the pathfinding
+    // tests rely on.
+    private System.Func<Vector2I, bool> hazardTest;
+
+    public void SetHazardTest(System.Func<Vector2I, bool> test)
+    {
+        hazardTest = test;
+    }
+
+    public bool IsHazardous(Vector2I cell)
+    {
+        return hazardTest != null && hazardTest(cell);
+    }
+
+    // Whether anything harmful is within `radius` tiles. Used to decide when to react, which wants a
+    // tighter radius than deciding where to run to: an ant should break away as soon as a flow is on
+    // top of her, but she should not abandon a dig because there is lava somewhere down the corridor.
+    public bool IsHazardNear(Vector2I cell, int radius)
+    {
+        if (hazardTest == null)
+        {
+            return false;
+        }
+
+        for (int y = -radius; y <= radius; y++)
+        {
+            for (int x = -radius; x <= radius; x++)
+            {
+                if (hazardTest(cell + new Vector2I(x, y)))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // Standable and not lethal. Kept separate from IsStandable rather than folded into it, because
+    // an ant already caught in a lava flow has to be able to walk out of a cell that is hazardous -
+    // if being in danger made her position unstandable, no route out of it could be planned at all.
+    public bool IsSafelyStandable(Vector2I cell)
+    {
+        return IsStandable(cell) && !IsHazardous(cell);
+    }
+
     // An ant can only occupy an open cell that has solid ground directly beneath it. Open space with
     // nothing under it is a drop, not a floor - that is what forces tunnels to be dug as ramps.
     public bool IsStandable(Vector2I cell)
@@ -176,7 +224,7 @@ public partial class GridManager : Node2D
     {
         const int MaxVisited = 4000;
 
-        if (IsStandable(from))
+        if (IsSafelyStandable(from))
         {
             return from;
         }
@@ -200,7 +248,7 @@ public partial class GridManager : Node2D
 
                 visited.Add(next);
 
-                if (IsStandable(next))
+                if (IsSafelyStandable(next))
                 {
                     return next;
                 }
@@ -211,6 +259,94 @@ public partial class GridManager : Node2D
 
         // No tunnel is reachable nearby.
         return from;
+    }
+
+    // How much daylight an ant wants between herself and the nearest harmful tile when fleeing.
+    //
+    // Not zero, because the thing she is running from is usually still moving. Lava spreads about a
+    // cell a tick, which is several times an ant's walking speed, so stopping at the first tile that
+    // happens to be clear just means being caught again a moment later - she has to break away from
+    // the flow, not step off the edge of it.
+    public const int HazardClearanceCells = 4;
+
+    // The way out for an ant standing in something that is hurting her.
+    //
+    // Deliberately searches over IsStandable rather than IsSafelyStandable, so the route may cross
+    // more hazardous ground on the way - when a flow has spread over several cells, walking through
+    // the rest of it is the only way out, and refusing to plan through danger would leave her
+    // standing in it. Only the destination has to be clear.
+    //
+    // Prefers a cell with full clearance and settles for a merely-safe one if the search runs out,
+    // since being next to the flow still beats being in it. Returns the cell she is already in when
+    // nothing better is in range, so callers always get somewhere valid to aim at.
+    public Vector2I FindNearestSafeCell(Vector2I from)
+    {
+        const int MaxVisited = 1200;
+
+        if (HasHazardClearance(from))
+        {
+            return from;
+        }
+
+        var visited = new HashSet<Vector2I> { from };
+        var frontier = new Queue<Vector2I>();
+        frontier.Enqueue(from);
+
+        Vector2I fallback = from;
+
+        while (frontier.Count > 0 && visited.Count < MaxVisited)
+        {
+            Vector2I current = frontier.Dequeue();
+
+            foreach (Vector2I direction in MoveDirections)
+            {
+                Vector2I next = current + direction;
+
+                if (visited.Contains(next) || !IsStandable(next))
+                {
+                    continue;
+                }
+
+                visited.Add(next);
+
+                if (HasHazardClearance(next))
+                {
+                    return next;
+                }
+
+                // Breadth-first, so the first merely-safe cell found is also the closest one.
+                if (fallback == from && !IsHazardous(next))
+                {
+                    fallback = next;
+                }
+
+                frontier.Enqueue(next);
+            }
+        }
+
+        return fallback;
+    }
+
+    // Safe to stand in, and with nothing harmful within HazardClearanceCells of it.
+    private bool HasHazardClearance(Vector2I cell)
+    {
+        if (!IsSafelyStandable(cell))
+        {
+            return false;
+        }
+
+        for (int y = -HazardClearanceCells; y <= HazardClearanceCells; y++)
+        {
+            for (int x = -HazardClearanceCells; x <= HazardClearanceCells; x++)
+            {
+                if (IsHazardous(cell + new Vector2I(x, y)))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
 
@@ -254,6 +390,15 @@ public partial class GridManager : Node2D
                 TileType tile = GetTile(next);
 
                 if (!IsWalkable(tile) && !IsDiggable(tile))
+                {
+                    continue;
+                }
+
+                // Never route a corridor through a lava flow or an acid pool. Worth saying twice,
+                // because digging is the one case where the destination is deliberately something
+                // you cannot currently stand in, and it would be easy to let the hazard slip past
+                // with it - a tunnel that has to be dug through lava is not a tunnel worth having.
+                if (IsHazardous(next))
                 {
                     continue;
                 }
@@ -333,7 +478,7 @@ public partial class GridManager : Node2D
             return new List<Vector2I> { start };
         }
 
-        if (!IsStandable(goal))
+        if (!IsSafelyStandable(goal))
         {
             return null;
         }
@@ -351,7 +496,7 @@ public partial class GridManager : Node2D
             {
                 Vector2I next = current + direction;
 
-                if (visited.Contains(next) || !IsStandable(next))
+                if (visited.Contains(next) || !IsSafelyStandable(next))
                 {
                     continue;
                 }

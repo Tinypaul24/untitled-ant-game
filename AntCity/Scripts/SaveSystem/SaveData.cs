@@ -16,7 +16,7 @@ public class SaveData
     public List<BroodSave> Eggs { get; set; } = new();
     public List<BroodSave> Larvae { get; set; } = new();
     public List<RoomSave> Rooms { get; set; } = new();
-    public ParticleSave Particles { get; set; } = new();
+    public MaterialSave Materials { get; set; } = new();
     public float TimeScale { get; set; } = 1f;
     public bool Paused { get; set; }
 }
@@ -123,8 +123,22 @@ public class RoomSave
     public List<int> PendingDigCells { get; set; } = new();
 }
 
-public class ParticleSave
+public class MaterialSave
 {
-    public List<int> Settled { get; set; } = new();
-    public List<int> Falling { get; set; } = new();
+    public List<MaterialChunkSave> Chunks { get; set; } = new();
+
+    // Cell, then remaining ticks.
+    public List<int> Lifetimes { get; set; } = new();
+
+    // Cell, then whole degrees.
+    public List<int> Temperatures { get; set; } = new();
+}
+
+public class MaterialChunkSave
+{
+    public int X { get; set; }
+    public int Y { get; set; }
+
+    // Alternating material id and run length.
+    public List<int> Runs { get; set; } = new();
 }
