@@ -34,15 +34,16 @@ public partial class ShotHarness : Node
             return;
         }
 
-        // Landed, part-way down the shaft.
-        if (frames == 330)
+        // Burrow cut, workers out - zoomed in, because the question is what a dug cavity looks
+        // like up close.
+        if (frames == 470)
         {
-            Save("digging.png");
+            camera.Zoom = new Vector2(3f, 3f);
+            camera.Position = grid.CellToWorld(grid.NestCenterCell + new Vector2I(7, 7));
             return;
         }
 
-        // Burrow cut, workers out.
-        if (frames == 480)
+        if (frames == 490)
         {
             Save("founded.png");
 
