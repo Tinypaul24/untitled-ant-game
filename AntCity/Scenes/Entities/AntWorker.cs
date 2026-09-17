@@ -63,6 +63,32 @@ public partial class AntWorker : Area2D
     private const float MouthOffset = 8f;
     private const float CarriedSpeckSize = 2f;
 
+    // How far she wanders off her own line, and how often. Wavelength is in world pixels travelled
+    // rather than in seconds, so a worker slowed by a load weaves the same shape more slowly instead
+    // of weaving a different shape. A real ant does not walk a ruled line and neither should she.
+    private const float WeaveAmplitude = 1.25f;
+    private const float WeaveWavelength = 14f;
+
+    // Two ants meeting stop and touch antennae. It is the single most recognisable thing ants do,
+    // it costs a third of a second, and it is what turns a corridor of traffic into a colony.
+    private const float AntennationRange = 7f;
+    private const double AntennationSeconds = 0.35;
+    // Long enough that a crowded nest does not become a standing ovation.
+    private const double AntennationCooldownSeconds = 4.0;
+
+    // Every part of her is drawn this far below the point the game thinks she occupies.
+    //
+    // Navigation works in tiles and puts her at the centre of one, so her feet hung two pixels clear
+    // of the floor she was supposed to be standing on. Now that a bored tunnel keeps a ragged
+    // ceiling, that same two pixels is also the difference between her antennae brushing the roof
+    // and her head being buried in it.
+    //
+    // A render offset, never a change to Position: WorldToCell(Position) is the "which tile am I in"
+    // oracle at fifteen call sites and in the tests, and shifting her by eight pixels of floor could
+    // push that answer across a tile boundary - at which point TryDigOut sees solid ground and she
+    // digs the floor out from under herself.
+    private static readonly Vector2 BodyOffset = new Vector2(0f, 2f);
+
     private static readonly Color SelectionRingColor = new Color(1f, 1f, 0.4f);
 
     private static readonly Texture2D UpTexture = GD.Load<Texture2D>("res://AntCity/Textures/Red Ant Up.svg");
@@ -97,6 +123,18 @@ public partial class AntWorker : Area2D
     private double legDeadline;
     private bool falling;
 
+    // What makes one worker not the same worker as the next.
+    //
+    // Ants on the same errand used to occupy exactly the same pixels: same speed, same line, same
+    // moment of arrival, so a column of them read as one ant drawn several times. None of this
+    // changes where she goes - it is all in how she covers the ground.
+    private float paceScale = 1f;
+    private float laneOffset;
+    private double weavePhase;
+    private double antennationTimer;
+    private double antennationCooldown;
+    private Vector2 renderOffset = BodyOffset;
+
     private Queue<Vector2I> pendingPath = new Queue<Vector2I>();
     private Action onPathComplete;
     private Vector2I digTarget;
@@ -120,6 +158,16 @@ public partial class AntWorker : Area2D
         AddToGroup("ants");
 
         sprite = GetNode<Sprite2D>("Sprite2D");
+
+        // Drawn slightly low so she stands on the floor rather than hovering over it, and each ant
+        // a little differently so a file of them does not read as one sprite repeated.
+        paceScale = (float)GD.RandRange(0.9, 1.1);
+        laneOffset = (float)GD.RandRange(-1.5, 1.5);
+        weavePhase = GD.RandRange(0.0, Mathf.Tau);
+
+        renderOffset = BodyOffset + new Vector2(0f, laneOffset);
+        sprite.Position = renderOffset;
+        GetNode<CollisionShape2D>("CollisionShape2D").Position = BodyOffset;
         digTimer = GetNode<Timer>("DigTimer");
         wanderTimer = GetNode<Timer>("WanderTimer");
         forageTimer = GetNode<Timer>("ForageTimer");
@@ -170,7 +218,11 @@ public partial class AntWorker : Area2D
             {
                 FleeHazard();
             }
+
+            CheckForPassingAnt();
         }
+
+        antennationCooldown -= delta;
 
         if (state != State.Walking)
         {
@@ -203,7 +255,7 @@ public partial class AntWorker : Area2D
         // snap. This is what makes her settle onto a target instead of overshooting it. The cap is
         // only reached on long legs; a single-tile hop never gets there, which is why a corridor
         // now reads as one accelerating run rather than sixteen identical steps.
-        float cap = falling ? FallSpeed : MoveSpeed;
+        float cap = (falling ? FallSpeed : MoveSpeed) * paceScale;
         float targetSpeed = Mathf.Min(cap, Mathf.Sqrt(2f * Acceleration * distance));
 
         // Turn at a bounded rate, so corners are arcs.
@@ -221,13 +273,93 @@ public partial class AntWorker : Area2D
             targetSpeed *= PivotSpeedFraction;
         }
 
+        // Stopped nose to nose with somebody. She still turns while she does it, so the pause reads
+        // as two ants attending to each other rather than as two ants glitching.
+        if (antennationTimer > 0)
+        {
+            antennationTimer -= delta;
+            targetSpeed = 0f;
+        }
+
         float speed = Mathf.MoveToward(velocity.Length(), targetSpeed, Acceleration * (float)delta);
         velocity = heading * speed;
 
         Position += velocity * (float)delta;
         UpdateFacing(heading);
+        Weave(speed * (float)delta);
 
         WatchForStall(delta);
+    }
+
+    // The wander in her walk.
+    //
+    // Driven by distance covered rather than by time, so it survives her being slowed down: a
+    // laden worker weaves the same shape at the same scale, just more slowly. Purely a render
+    // offset - she is exactly where the game thinks she is, she simply is not drawn on the rail.
+    private void Weave(float travelled)
+    {
+        weavePhase += travelled / WeaveWavelength * Mathf.Tau;
+
+        Vector2 across = new Vector2(-heading.Y, heading.X);
+
+        renderOffset = BodyOffset
+            + new Vector2(0f, laneOffset)
+            + across * (WeaveAmplitude * Mathf.Sin((float)weavePhase));
+
+        sprite.Position = renderOffset;
+
+        // Anything in her jaws is drawn by _Draw, which does not follow the sprite node on its own.
+        if (carriedGrains.Count > 0)
+        {
+            QueueRedraw();
+        }
+    }
+
+    // Two ants meeting stop and touch antennae.
+    //
+    // It is the most recognisable thing ants do, it is how they actually exchange information, and
+    // it costs a third of a second. Without it a corridor is a conveyor belt; with it the same
+    // corridor reads as traffic between individuals.
+    //
+    // On the quarter-second tick rather than per frame, and only while walking: this is an
+    // all-pairs scan over the colony and the cheapest honest way to keep it that way is to do it
+    // rarely. Never while fleeing - there is a frame deadline on getting out of lava, and stopping
+    // to say hello on the way is how an ant dies politely.
+    private void CheckForPassingAnt()
+    {
+        if (escaping || state != State.Walking || antennationTimer > 0 || antennationCooldown > 0)
+        {
+            return;
+        }
+
+        foreach (Node node in GetTree().GetNodesInGroup("ants"))
+        {
+            if (node == this || node is not AntWorker other)
+            {
+                continue;
+            }
+
+            if (Position.DistanceSquaredTo(other.Position) > AntennationRange * AntennationRange)
+            {
+                continue;
+            }
+
+            Greet();
+            other.Greet();
+
+            return;
+        }
+    }
+
+    private void Greet()
+    {
+        if (escaping || antennationTimer > 0)
+        {
+            return;
+        }
+
+        antennationTimer = AntennationSeconds;
+        antennationCooldown = AntennationCooldownSeconds;
     }
 
     // Whether she has gone past the waypoint rather than reaching it. Distance alone is not enough
@@ -359,6 +491,7 @@ public partial class AntWorker : Area2D
         velocity = Vector2.Zero;
         legDirection = Vector2.Zero;
         falling = false;
+        antennationTimer = 0;
         escaping = false;
 
         AbandonCurrentJob();
@@ -407,7 +540,7 @@ public partial class AntWorker : Area2D
 
         if (isSelected)
         {
-            DrawArc(BodyOffset, SelectionRingRadius, 0f, Mathf.Tau, 24, SelectionRingColor, 2f, true);
+            DrawArc(renderOffset, SelectionRingRadius, 0f, Mathf.Tau, 24, SelectionRingColor, 2f, true);
         }
     }
 
@@ -429,7 +562,7 @@ public partial class AntWorker : Area2D
             MaxCarriedSpecksDrawn
         );
 
-        Vector2 mouth = facing * MouthOffset;
+        Vector2 mouth = renderOffset + facing * MouthOffset;
         Vector2 across = new Vector2(-facing.Y, facing.X);
 
         for (int i = 0; i < specks; i++)
@@ -720,6 +853,7 @@ public partial class AntWorker : Area2D
         // the one moment she should visibly stop dead before bolting.
         velocity = Vector2.Zero;
         falling = false;
+        antennationTimer = 0;
 
         // A path may not exist: FindTunnelPath refuses to route through danger, and she is standing
         // in it. The refuge is adjacent in that case, so step straight at it - hesitating inside a
