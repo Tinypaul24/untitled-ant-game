@@ -1055,6 +1055,30 @@ public partial class TerrainTests : Node
 
         Check(!build.TryCreateRoom(new Rect2I(hollow, new Vector2I(3, 2)), BuildingType.Granary),
             "a room with a hole in its floor is refused");
+
+        // A cavern is not a chamber. Dug wide and open, so more than half the ring is gone.
+        Vector2I cavern = grid.NestCenterCell + new Vector2I(-104, 12);
+
+        for (int x = -1; x < 6; x++)
+        {
+            for (int y = -1; y < 4; y++)
+            {
+                grid.Dig(cavern + new Vector2I(x, y));
+                grid.SetTileFromSimulation(cavern + new Vector2I(x, y), GridManager.TileType.Tunnel);
+            }
+        }
+
+        // A floor under it, so "nowhere to stand" cannot be the reason.
+        for (int x = -1; x < 6; x++)
+        {
+            materials.FillTile(cavern + new Vector2I(x, 4), MaterialId.Stone);
+            grid.SetTileFromSimulation(cavern + new Vector2I(x, 4), GridManager.TileType.Rock);
+        }
+
+        materials.DeriveDirtyTiles();
+
+        Check(!build.TryCreateRoom(new Rect2I(cavern, new Vector2I(4, 2)), BuildingType.Granary),
+            "a room carved out of an open cavern is refused");
     }
 
     // A misplaced room used to be permanent: no way to select it, no way to remove it, and its food

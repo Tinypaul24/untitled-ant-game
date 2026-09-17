@@ -769,6 +769,23 @@ public partial class BuildManager : Node2D
             return false;
         }
 
+        // Not a patch of somebody else's cavern with a label on it.
+        //
+        // The threshold is measured, not guessed. Watching the colony play itself, a chamber dug
+        // off a corridor comes out with two or three of its sixteen ring tiles open - the doorway
+        // the diggers came in through, and the odd cell their descending staircase clipped. An
+        // already-excavated cavern is sixteen of sixteen. Half the ring sits in the middle of a very
+        // wide gap, and it says what it means: more than half the wall is missing, so there is no
+        // wall.
+        int openRing = OpenRingCells(footprint);
+        int ringCells = RingCellCount(footprint);
+
+        if (openRing * 2 > ringCells)
+        {
+            reason = $"That is open cavern, not a chamber - {openRing} of {ringCells} edge tiles are already dug.";
+            return false;
+        }
+
         // A chamber needs somewhere to stand.
         //
         // Nothing checked this, and the failure was silent rather than loud: open sky counts as a
@@ -802,6 +819,33 @@ public partial class BuildManager : Node2D
     }
 
     // How many cells of this chamber will have a floor once it is dug.
+
+    // How much of a chamber's wall is already missing.
+    //
+    // A ring with one or two holes is a chamber with doorways. A ring that is mostly holes is not a
+    // chamber at all - it is a patch of an existing cavern with a label on it, which is the
+    // open-plan building this rule exists to prevent.
+    private int OpenRingCells(Rect2I footprint)
+    {
+        int open = 0;
+
+        ForEachRingCell(footprint, cell =>
+        {
+            if (GridManager.IsTunnel(cell))
+            {
+                open++;
+            }
+        });
+
+        return open;
+    }
+
+    private static int RingCellCount(Rect2I footprint)
+    {
+        Rect2I ring = footprint.Grow(1);
+
+        return ring.Size.X * ring.Size.Y - footprint.Size.X * footprint.Size.Y;
+    }
     //
     // Only the bottom row can have one: a cell is standable when the cell below is *not* walkable,
     // and every cell below a higher row is itself part of the room and will be dug out.

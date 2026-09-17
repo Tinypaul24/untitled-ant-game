@@ -142,13 +142,24 @@ public partial class ShotHarness : Node
         colony.AddFood(200);
         build.TryCreateRoom(new Rect2I(RoomOrigin, new Vector2I(4, 2)), BuildingType.Nursery);
 
+        Room placed = null;
+
         foreach (Node child in GetNode("Main").GetChildren())
         {
             if (child is Room room && room.Footprint.Position == RoomOrigin)
             {
+                placed = room;
                 build.ReportFurnishDone(room);
                 build.SelectRoom(room);
             }
+        }
+
+        // Said out loud. This runs after ninety seconds of live ants, so the ring here may have been
+        // chewed open by a forager on her way past - and a photo harness that silently photographs
+        // nothing is worse than the rule it is hiding.
+        if (placed == null)
+        {
+            GD.PushError($"ShotHarness: no room was placed at {RoomOrigin}; room.png shows nothing.");
         }
     }
 
