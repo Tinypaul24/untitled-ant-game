@@ -31,6 +31,9 @@ public partial class ColonyUI : CanvasLayer
     private Button fungusFarmButton;
     private Button royalChamberButton;
 
+    private PanelContainer previewPanel;
+    private Label previewLabel;
+
     private Control roomPanel;
     private Label roomTitle;
     private Label roomDetail;
@@ -73,6 +76,9 @@ public partial class ColonyUI : CanvasLayer
         nurseryButton = GetNode<Button>("ThemeRoot/BuildTray/NurseryButton");
         fungusFarmButton = GetNode<Button>("ThemeRoot/BuildTray/FungusFarmButton");
         royalChamberButton = GetNode<Button>("ThemeRoot/BuildTray/RoyalChamberButton");
+
+        previewPanel = GetNode<PanelContainer>("ThemeRoot/PreviewPanel");
+        previewLabel = GetNode<Label>("ThemeRoot/PreviewPanel/PreviewLabel");
 
         roomPanel = GetNode<Control>("ThemeRoot/RoomPanel");
         roomTitle = GetNode<Label>("ThemeRoot/RoomPanel/RoomBox/RoomTitle");
@@ -118,6 +124,7 @@ public partial class ColonyUI : CanvasLayer
         SetBuildingButtonLabel(royalChamberButton, BuildingType.RoyalChamber);
 
         buildManager.RoomSelected += ShowRoom;
+        buildManager.PreviewChanged += ShowPreviewReason;
         demolishButton.Pressed += () => buildManager.Demolish(buildManager.Selected);
 
         // Set the initial values.
@@ -206,6 +213,24 @@ public partial class ColonyUI : CanvasLayer
             $"{def.Description}\n\n" +
             $"Effect: {def.EffectSummary}\n" +
             $"Cost: {def.FoodCostPerCell} food per cell";
+    }
+
+    // Why the placement under the cursor would be refused, while there is still time to move it.
+    //
+    // The reason already existed - IsFootprintValid has always produced one - but it was discarded
+    // during the drag and only surfaced as a toast once the placement had already failed. A player
+    // learned the rules by breaking them and being told afterwards.
+    private void ShowPreviewReason(string reason, bool valid)
+    {
+        if (!buildManager.IsPlacing)
+        {
+            previewPanel.Visible = false;
+            return;
+        }
+
+        previewPanel.Visible = true;
+        previewLabel.Text = valid ? "Drag out a chamber" : reason;
+        previewLabel.Modulate = valid ? Colors.White : new Color(1f, 0.6f, 0.5f);
     }
 
     // The room inspector. Shows what the selected room is, how far along it is, and what it is

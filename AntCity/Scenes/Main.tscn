@@ -170,6 +170,24 @@ layout_mode = 2
 [node name="NurseryButton" type="Button" parent="UI/ThemeRoot/BuildTray"]
 layout_mode = 2
 
+[node name="PreviewPanel" type="PanelContainer" parent="UI/ThemeRoot"]
+visible = false
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 4.0
+offset_top = -58.0
+offset_right = -4.0
+offset_bottom = -42.0
+grow_horizontal = 2
+grow_vertical = 0
+
+[node name="PreviewLabel" type="Label" parent="UI/ThemeRoot/PreviewPanel"]
+layout_mode = 2
+horizontal_alignment = 1
+text = "preview"
+
 [node name="FungusFarmButton" type="Button" parent="UI/ThemeRoot/BuildTray"]
 layout_mode = 2
 

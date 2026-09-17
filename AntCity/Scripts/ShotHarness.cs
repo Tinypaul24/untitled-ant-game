@@ -100,6 +100,20 @@ public partial class ShotHarness : Node
         if (frames == 5450)
         {
             Save("room.png");
+            return;
+        }
+
+        // The placement preview, which is judged entirely by looking: whether the cells read as
+        // what they are, and whether the ring reads as the wall the ants are going to build.
+        if (frames == 5460)
+        {
+            ArmPlacementPreview();
+            return;
+        }
+
+        if (frames == 5475)
+        {
+            Save("preview.png");
 
             GetTree().Quit();
         }
@@ -136,6 +150,19 @@ public partial class ShotHarness : Node
                 build.SelectRoom(room);
             }
         }
+    }
+
+    // Arms a placement and puts the cursor over ground with a corridor already through it, so the
+    // ring has both walls and a breach in it and the preview has something to say.
+    private void ArmPlacementPreview()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+
+        camera.Zoom = new Vector2(4f, 4f);
+        camera.Position = grid.CellToWorld(CorridorStart + new Vector2I(2, 2));
+
+        build.BeginPlacement(BuildingType.Granary);
+        build.PreviewForTest(new Rect2I(CorridorStart + new Vector2I(1, 1), new Vector2I(3, 2)));
     }
 
     private Vector2I CorridorStart => grid.NestCenterCell + new Vector2I(14, 6);

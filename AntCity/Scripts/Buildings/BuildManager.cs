@@ -12,6 +12,12 @@ public partial class BuildManager : Node2D
 
     private static readonly Color ValidPreviewColor = new Color(0.4f, 1f, 0.4f, 0.35f);
     private static readonly Color InvalidPreviewColor = new Color(1f, 0.3f, 0.3f, 0.35f);
+    // Ground another room already owns - a different problem from rock, and worth saying so.
+    private static readonly Color TakenPreviewColor = new Color(1f, 0.55f, 0.2f, 0.4f);
+    // The HardenedDirt the ants will cement this ring into, so the preview shows the finished wall.
+    private static readonly Color WallPreviewColor = new Color(0.35f, 0.29f, 0.24f, 0.55f);
+    // A hole in the wall. One is a doorway; a ring full of them is an open cavern.
+    private static readonly Color BreachPreviewColor = new Color(0.25f, 0.6f, 0.9f, 0.3f);
 
     [Export]
     public GridManager GridManager { get; set; }
@@ -27,6 +33,16 @@ public partial class BuildManager : Node2D
     private bool isDragging;
     private Vector2 dragStart;
     private Vector2 dragCurrent;
+    private Vector2 hoverPosition;
+
+    // Only re-announced when it changes, or the label would be rewritten sixty times a second.
+    private string lastReason;
+    private bool lastValid;
+
+    // Why the placement under the cursor would be refused, for the UI to say in words. Geometry is
+    // drawn here; sentences belong where the theme and the font live.
+    [Signal]
+    public delegate void PreviewChangedEventHandler(string reason, bool valid);
 
     public bool IsPlacing => pendingType.HasValue;
 
@@ -42,6 +58,9 @@ public partial class BuildManager : Node2D
     {
         pendingType = type;
         isDragging = false;
+        hoverPosition = GetGlobalMousePosition();
+
+        AnnouncePreview();
         QueueRedraw();
     }
 
@@ -49,7 +68,39 @@ public partial class BuildManager : Node2D
     {
         pendingType = null;
         isDragging = false;
+
+        // Said on the way out as well as on the way in. _Draw returns early when nothing is being
+        // placed, so without this the label would keep whatever it last said forever.
+        AnnouncePreview();
         QueueRedraw();
+    }
+
+    // Drives the preview to a chosen footprint without synthesising mouse input, so a screenshot
+    // harness can photograph it. Exercises the same drag path the UI takes.
+    public void PreviewForTest(Rect2I footprint)
+    {
+        isDragging = true;
+        dragStart = GridManager.CellToWorld(footprint.Position);
+        dragCurrent = GridManager.CellToWorld(footprint.Position + footprint.Size - Vector2I.One);
+
+        AnnouncePreview();
+        QueueRedraw();
+    }
+
+    private void AnnouncePreview()
+    {
+        string reason = null;
+        bool valid = false;
+
+        if (IsPlacing)
+        {
+            valid = IsFootprintValid(PreviewFootprint(), out reason);
+        }
+
+        lastReason = reason;
+        lastValid = valid;
+
+        EmitSignal(SignalName.PreviewChanged, reason ?? "", valid);
     }
 
     // Nearest not-yet-claimed cell that some room still needs dug, if any.
@@ -362,25 +413,89 @@ public partial class BuildManager : Node2D
                 GetViewport().SetInputAsHandled();
             }
         }
-        else if (@event is InputEventMouseMotion && isDragging)
+        else if (@event is InputEventMouseMotion motion)
         {
-            dragCurrent = GetGlobalMousePosition();
+            // Tracked whether or not a drag is in progress. Nothing used to be drawn until the
+            // player pressed the button, so the rules were only ever discoverable by breaking them.
+            hoverPosition = GetGlobalMousePosition();
+
+            if (isDragging)
+            {
+                dragCurrent = hoverPosition;
+            }
+
             QueueRedraw();
         }
     }
 
+    // What the player is about to place, before they have committed to it.
+    private Rect2I PreviewFootprint()
+    {
+        return isDragging
+            ? ComputeFootprint(dragStart, dragCurrent)
+            : ComputeFootprint(hoverPosition, hoverPosition);
+    }
+
+    // The preview used to be one flat rectangle over the bounding box, tinted by a single boolean,
+    // with the rejection reason thrown away (`out _`) and nothing drawn at all until a drag began.
+    // So a player who broke a rule learned only that something had gone wrong, after the fact, and
+    // could not see which cells were the problem.
+    //
+    // Now it shows the room and its wall: every cell of the footprint tinted by what it actually
+    // is, and the one-tile ring drawn in the colour the finished wall will be, so the preview is a
+    // picture of the chamber rather than a box.
     public override void _Draw()
     {
-        if (!isDragging)
+        if (!IsPlacing)
         {
             return;
         }
 
-        Rect2I footprint = ComputeFootprint(dragStart, dragCurrent);
-        Vector2 topLeft = new Vector2(footprint.Position.X, footprint.Position.Y) * GridManager.CellSize;
-        Vector2 size = new Vector2(footprint.Size.X, footprint.Size.Y) * GridManager.CellSize;
+        Rect2I footprint = PreviewFootprint();
+        bool valid = IsFootprintValid(footprint, out string reason);
 
-        DrawRect(new Rect2(topLeft, size), IsFootprintValid(footprint, out _) ? ValidPreviewColor : InvalidPreviewColor, filled: true);
+        DrawRing(footprint);
+        DrawInterior(footprint);
+
+        // Said out loud while there is still time to move the cursor, rather than as a toast after
+        // the placement has already failed.
+        if (reason != lastReason || valid != lastValid)
+        {
+            lastReason = reason;
+            lastValid = valid;
+
+            EmitSignal(SignalName.PreviewChanged, reason ?? "", valid);
+        }
+    }
+
+    private void DrawInterior(Rect2I footprint)
+    {
+        var size = new Vector2(GridManager.CellSize, GridManager.CellSize);
+
+        ForEachCell(footprint, cell =>
+        {
+            Color tint = roomsByCell.ContainsKey(cell) ? TakenPreviewColor
+                : IsUsableRoomCell(cell) ? ValidPreviewColor
+                : InvalidPreviewColor;
+
+            DrawRect(new Rect2(new Vector2(cell.X, cell.Y) * GridManager.CellSize, size), tint, filled: true);
+        });
+    }
+
+    // The wall, drawn in the colour it will actually become once the ants have cemented it, so the
+    // preview predicts the chamber rather than merely outlining a selection.
+    private void DrawRing(Rect2I footprint)
+    {
+        var size = new Vector2(GridManager.CellSize, GridManager.CellSize);
+
+        ForEachRingCell(footprint, cell =>
+        {
+            Color tint = roomsByCell.ContainsKey(cell) ? TakenPreviewColor
+                : GridManager.IsTunnel(cell) ? BreachPreviewColor
+                : WallPreviewColor;
+
+            DrawRect(new Rect2(new Vector2(cell.X, cell.Y) * GridManager.CellSize, size), tint, filled: true);
+        });
     }
 
     private void OnCellDug(Vector2I cell)
@@ -678,6 +793,29 @@ public partial class BuildManager : Node2D
             for (int y = footprint.Position.Y; y < footprint.Position.Y + footprint.Size.Y; y++)
             {
                 action(new Vector2I(x, y));
+            }
+        }
+    }
+
+    // The one-tile band of earth around a footprint - the chamber's wall.
+    //
+    // Corners included. They are part of the shell even though nothing can walk diagonally through
+    // a corner, and leaving them out would let two chambers meet at a point with no wall between.
+    private static void ForEachRingCell(Rect2I footprint, System.Action<Vector2I> action)
+    {
+        Rect2I ring = footprint.Grow(1);
+
+        for (int x = ring.Position.X; x < ring.Position.X + ring.Size.X; x++)
+        {
+            for (int y = ring.Position.Y; y < ring.Position.Y + ring.Size.Y; y++)
+            {
+                bool inside = x >= footprint.Position.X && x < footprint.Position.X + footprint.Size.X
+                    && y >= footprint.Position.Y && y < footprint.Position.Y + footprint.Size.Y;
+
+                if (!inside)
+                {
+                    action(new Vector2I(x, y));
+                }
             }
         }
     }
