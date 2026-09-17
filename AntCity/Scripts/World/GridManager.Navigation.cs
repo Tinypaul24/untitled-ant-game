@@ -471,8 +471,6 @@ public partial class GridManager : Node2D
     // Shortest walkable route from `start` to `goal` through already-dug tunnel cells, or null if unreachable.
     public List<Vector2I> FindTunnelPath(Vector2I start, Vector2I goal)
     {
-        const int MaxVisited = 6000;
-
         if (start == goal)
         {
             return new List<Vector2I> { start };
@@ -483,12 +481,112 @@ public partial class GridManager : Node2D
             return null;
         }
 
+        List<Vector2I> route = FindTunnelPathAStar(start, goal)
+            ?? FindTunnelPathBreadthFirst(start, goal);
+
+        // Simplified here rather than in BuildPath, because BuildPath also serves PlanDigRoute,
+        // whose output is a carve list rather than a walking route.
+        return route == null ? null : SimplifyRoute(route);
+    }
+
+    private const int MaxPathVisited = 6000;
+
+    // Costs in tenths, so a diagonal is 14 against a sideways step's 10 and all the arithmetic
+    // stays integral. Floats would work and would also make two routes of identical length compare
+    // unequal depending on the order their steps happened to be summed.
+    private const int StraightCost = 10;
+    private const int DiagonalCost = 14;
+
+    // A*, with a diagonal costing what a diagonal actually costs.
+    //
+    // This was an unweighted breadth-first search, and that is the root of the staircase rather
+    // than a detail of it. Under unit costs a zigzag is free: down-right then up-right is two moves
+    // for a net two cells sideways, which is exactly what right-then-right costs - so the search
+    // was genuinely indifferent between a straight corridor and one that bobbed up and down the
+    // whole way, and picked between them on frontier order. SimplifyRoute could tidy the result up
+    // afterwards but could not stop it being chosen, and could not recover a route whose real
+    // shape had already been thrown away.
+    //
+    // The heuristic is octile distance. It stays admissible here for a slightly subtle reason: it
+    // is computed as though the ant could also step straight up and down, and she cannot. Crediting
+    // her with moves she does not have can only make the estimate too small, never too large, which
+    // is the direction that keeps A* honest.
+    private List<Vector2I> FindTunnelPathAStar(Vector2I start, Vector2I goal)
+    {
+        var cameFrom = new Dictionary<Vector2I, Vector2I>();
+        var costSoFar = new Dictionary<Vector2I, int> { [start] = 0 };
+        var frontier = new PriorityQueue<Vector2I, int>();
+
+        frontier.Enqueue(start, Octile(start, goal));
+
+        while (frontier.Count > 0 && costSoFar.Count < MaxPathVisited)
+        {
+            Vector2I current = frontier.Dequeue();
+
+            if (current == goal)
+            {
+                return BuildPath(cameFrom, start, goal);
+            }
+
+            int reached = costSoFar[current];
+
+            foreach (Vector2I direction in MoveDirections)
+            {
+                Vector2I next = current + direction;
+
+                if (!IsSafelyStandable(next))
+                {
+                    continue;
+                }
+
+                // Every entry in MoveDirections is either sideways or a unit diagonal, so the Y
+                // component is the whole of the question.
+                int candidate = reached + (direction.Y == 0 ? StraightCost : DiagonalCost);
+
+                // A cell can be re-reached more cheaply than it was first found, and the queue keeps
+                // the stale entry. Comparing against the best cost known is what makes that safe:
+                // a worse arrival is dropped here, and a stale dequeue above simply re-expands a
+                // cell whose neighbours are all already at least as good.
+                if (costSoFar.TryGetValue(next, out int known) && known <= candidate)
+                {
+                    continue;
+                }
+
+                costSoFar[next] = candidate;
+                cameFrom[next] = current;
+
+                frontier.Enqueue(next, candidate + Octile(next, goal));
+            }
+        }
+
+        return null;
+    }
+
+    // Diagonal-aware straight-line distance: go diagonally for as long as both axes still need
+    // covering, then sideways for the rest.
+    private static int Octile(Vector2I from, Vector2I to)
+    {
+        int dx = Mathf.Abs(to.X - from.X);
+        int dy = Mathf.Abs(to.Y - from.Y);
+
+        return StraightCost * (dx + dy) + (DiagonalCost - 2 * StraightCost) * Mathf.Min(dx, dy);
+    }
+
+    // Kept as a fallback, and not out of nostalgia.
+    //
+    // Under a fixed node budget a heuristic search and a breadth-first one fail in different
+    // places: A* will pour its whole budget into a promising dead end, where breadth-first would
+    // have plodded round the long way and arrived. A route this used to find and now does not is an
+    // ant stranded somewhere she cannot walk out of, which is this game's one unrecoverable bug -
+    // so when the clever search comes back empty, the plain one gets a turn.
+    private List<Vector2I> FindTunnelPathBreadthFirst(Vector2I start, Vector2I goal)
+    {
         var cameFrom = new Dictionary<Vector2I, Vector2I>();
         var visited = new HashSet<Vector2I> { start };
         var frontier = new Queue<Vector2I>();
         frontier.Enqueue(start);
 
-        while (frontier.Count > 0 && visited.Count < MaxVisited)
+        while (frontier.Count > 0 && visited.Count < MaxPathVisited)
         {
             Vector2I current = frontier.Dequeue();
 
@@ -506,9 +604,7 @@ public partial class GridManager : Node2D
 
                 if (next == goal)
                 {
-                    // Simplified here rather than in BuildPath, because BuildPath also serves
-                    // PlanDigRoute, whose output is a carve list rather than a walking route.
-                    return SimplifyRoute(BuildPath(cameFrom, start, goal));
+                    return BuildPath(cameFrom, start, goal);
                 }
 
                 frontier.Enqueue(next);

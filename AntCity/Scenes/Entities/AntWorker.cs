@@ -99,6 +99,28 @@ public partial class AntWorker : Area2D
     private static readonly Texture2D DownTexture = GD.Load<Texture2D>("res://AntCity/Textures/Red Ant Down.svg");
     private static readonly Texture2D LeftTexture = GD.Load<Texture2D>("res://AntCity/Textures/Red Ant Left.svg");
     private static readonly Texture2D RightTexture = GD.Load<Texture2D>("res://AntCity/Textures/Red Ant Right.svg");
+    // Down-right. Mirrored at draw time to cover the other three diagonals.
+    private static readonly Texture2D DiagonalTexture = GD.Load<Texture2D>("res://AntCity/Textures/Red Ant DownRight.svg");
+
+    private const int Octants = 8;
+    private static readonly float SectorRadians = Mathf.Tau / Octants;
+    // About ten degrees of stickiness past the halfway line between two sprites.
+    private static readonly float FacingHysteresisRadians = Mathf.DegToRad(10f);
+
+    // Indexed by octant, starting at Right and going clockwise on screen. Normalised, because this
+    // is also where the mandibles are and a carried load hung off an unnormalised diagonal would
+    // sit forty percent further out than one carried sideways.
+    private static readonly Vector2[] OctantDirections =
+    {
+        new Vector2(1f, 0f),
+        new Vector2(1f, 1f).Normalized(),
+        new Vector2(0f, 1f),
+        new Vector2(-1f, 1f).Normalized(),
+        new Vector2(-1f, 0f),
+        new Vector2(-1f, -1f).Normalized(),
+        new Vector2(0f, -1f),
+        new Vector2(1f, -1f).Normalized(),
+    };
 
     private Sprite2D sprite;
     private Timer digTimer;
@@ -117,6 +139,8 @@ public partial class AntWorker : Area2D
     private Vector2 wanderHome;
     private Vector2 moveTarget;
     private Vector2 facing = Vector2.Down;
+    // Down, matching the texture the scene file starts her on.
+    private int facingOctant = 2;
 
     // Where she is actually going and how fast, as opposed to where the path says she should be.
     private Vector2 velocity;
@@ -1328,45 +1352,95 @@ public partial class AntWorker : Area2D
         wanderTimer.Start();
     }
 
+    // Which of the eight ways she is drawn facing.
+    //
+    // Four of them used to be all there was, and on a diagonal |dx| equalled |dy| exactly, so she
+    // rendered end-on while travelling at forty-five degrees and visibly slid down every ramp in
+    // the colony. Steering then made it worse by turning the heading into a continuously varying
+    // angle: a bare comparison around the diagonal flips several times a second and the sprite
+    // strobes.
+    //
+    // Rotating one sprite would have been free and was the wrong answer. Twelve-pixel crisp-edge
+    // art does not survive nearest-neighbour rotation at anything but multiples of ninety degrees -
+    // it shimmers as the angle changes, which trades a strobe for a worse strobe.
     private void UpdateFacing(Vector2 direction)
     {
-        float alongX = Mathf.Abs(direction.X);
-        float alongY = Mathf.Abs(direction.Y);
-
-        // Sticky sideways, for two reasons that used to be one bug each.
-        //
-        // Ties go to horizontal: every ramp in the game is an exact 45 degrees, because
-        // MoveDirections only holds unit diagonals - so |dx| == |dy| exactly, a strict comparison
-        // fell through to the vertical branch, and the ant rendered facing Up or Down while walking
-        // sideways. She visibly slid down every slope in the colony.
-        //
-        // And horizontal holds until clearly beaten, because heading is now a continuously turning
-        // vector rather than one of eight fixed directions. Around 45 degrees a bare comparison
-        // flips several times a second and the sprite strobes. Diagonal art is the real answer;
-        // until then she has to commit a quarter past the diagonal before the view of her changes.
-        bool wasHorizontal = facing.X != 0f;
-        bool horizontal = wasHorizontal ? alongY <= alongX * 1.25f : alongX >= alongY;
-
-        Vector2 turned = horizontal
-            ? new Vector2(Mathf.Sign(direction.X), 0f)
-            : new Vector2(0f, Mathf.Sign(direction.Y));
-
-        if (turned == facing || turned == Vector2.Zero)
+        if (direction == Vector2.Zero)
         {
             return;
         }
 
-        facing = turned;
+        int wanted = Mathf.PosMod(Mathf.RoundToInt(direction.Angle() / SectorRadians), Octants);
 
-        sprite.Texture = horizontal
-            ? (direction.X > 0 ? RightTexture : LeftTexture)
-            : (direction.Y > 0 ? DownTexture : UpTexture);
+        if (wanted == facingOctant)
+        {
+            return;
+        }
+
+        // She has to be clearly into the next sector rather than merely over its border. Without
+        // this a heading hovering on a boundary - which is exactly what a long shallow diagonal
+        // produces - swaps the sprite back and forth every few frames.
+        float fromCurrent = Mathf.Abs(Mathf.AngleDifference(facingOctant * SectorRadians, direction.Angle()));
+
+        if (fromCurrent < SectorRadians / 2f + FacingHysteresisRadians)
+        {
+            return;
+        }
+
+        facingOctant = wanted;
+        facing = OctantDirections[wanted];
+
+        ApplyFacingSprite();
 
         // Anything in her jaws has to swing round with her.
         if (carriedGrains.Count > 0)
         {
             QueueRedraw();
         }
+    }
+
+    // One diagonal sprite serves all four diagonals.
+    //
+    // A top-down ant is bilaterally symmetric about her own body axis, so mirroring a down-right
+    // ant across either screen axis gives a genuine up-right or down-left ant rather than an ant
+    // with her legs on wrong. That is three sprites of artwork saved, and - more to the point -
+    // three sprites that cannot drift out of step with each other.
+    private void ApplyFacingSprite()
+    {
+        switch (facingOctant)
+        {
+            case 0:
+                Show(RightTexture, flipH: false, flipV: false);
+                break;
+            case 1:
+                Show(DiagonalTexture, flipH: false, flipV: false);
+                break;
+            case 2:
+                Show(DownTexture, flipH: false, flipV: false);
+                break;
+            case 3:
+                Show(DiagonalTexture, flipH: true, flipV: false);
+                break;
+            case 4:
+                Show(LeftTexture, flipH: false, flipV: false);
+                break;
+            case 5:
+                Show(DiagonalTexture, flipH: true, flipV: true);
+                break;
+            case 6:
+                Show(UpTexture, flipH: false, flipV: false);
+                break;
+            default:
+                Show(DiagonalTexture, flipH: false, flipV: true);
+                break;
+        }
+    }
+
+    private void Show(Texture2D texture, bool flipH, bool flipV)
+    {
+        sprite.Texture = texture;
+        sprite.FlipH = flipH;
+        sprite.FlipV = flipV;
     }
 
     private void OnInputEvent(Node viewport, InputEvent @event, long shapeIdx)

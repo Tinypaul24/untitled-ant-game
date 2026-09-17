@@ -39,6 +39,7 @@ public partial class TerrainTests : Node
         NestWallsCementThemselves();
         RoomsCanBePlacedAndFinished();
         SmoothedRoutesStayWalkable();
+        RoutesDoNotBobUpAndDown();
         DugCorridorsStayWalkable();
         SaveRoundTripRebuildsTheWorld();
 
@@ -961,6 +962,92 @@ public partial class TerrainTests : Node
 
         Check(unwalkable == 0, "every simplified segment stays on standable ground",
             $"{unwalkable} segments cross ground she cannot walk");
+    }
+
+    // What weighting the search actually bought.
+    //
+    // Under the old unweighted search a zigzag was free: down-right then up-right is two moves for
+    // a net two cells sideways, exactly what right-then-right costs, so the planner was genuinely
+    // indifferent between a flat corridor and one that bobbed up and down the whole way. Asserted
+    // on the expanded route rather than the simplified one, because simplification hides the
+    // symptom - the point is that the shape is no longer *chosen*.
+    private void RoutesDoNotBobUpAndDown()
+    {
+        // A flat floor with headroom, cut on purpose: on generated terrain a route that rises and
+        // falls may be the only route there is, and this has to distinguish "chose to zigzag" from
+        // "had to".
+        const int Cut = 24;
+        const int MinRun = 10;
+
+        Vector2I floor = FindDiggableNear(grid.NestCenterCell + new Vector2I(-40, 12));
+
+        for (int x = 0; x < Cut; x++)
+        {
+            grid.Dig(floor + new Vector2I(x, 0));
+            grid.Dig(floor + new Vector2I(x, -1));
+        }
+
+        materials.DeriveDirtyTiles();
+
+        // The longest run that is genuinely flat, rather than the run asked for.
+        //
+        // Generation is free to have put a cavity under part of this patch, and a cell with no
+        // floor beneath it is not standable however thoroughly it has been dug. Measuring the run
+        // instead of forcing it keeps the test about the planner: on terrain where leaving the row
+        // is the only way through, a route that leaves the row is right to.
+        int runStart = 0;
+        int runLength = 0;
+        int current = 0;
+
+        for (int x = 0; x < Cut; x++)
+        {
+            current = grid.IsStandable(floor + new Vector2I(x, 0)) ? current + 1 : 0;
+
+            if (current > runLength)
+            {
+                runLength = current;
+                runStart = x - current + 1;
+            }
+        }
+
+        Check(runLength >= MinRun, "a flat corridor could be cut to route along",
+            $"longest flat run is {runLength} of {Cut}");
+
+        if (runLength < MinRun)
+        {
+            return;
+        }
+
+        Vector2I from = floor + new Vector2I(runStart, 0);
+        Vector2I to = floor + new Vector2I(runStart + runLength - 1, 0);
+
+        List<Vector2I> cells = ExpandRoute(grid.FindTunnelPath(from, to));
+
+        Check(cells != null, "there is a route along the flat corridor");
+
+        if (cells == null)
+        {
+            return;
+        }
+
+        // Both ends are on the same row and the whole corridor is standable, so the cheapest route
+        // is sixteen sideways steps and anything that leaves the row is paying 14 for a 10 it did
+        // not need.
+        int offRow = 0;
+
+        foreach (Vector2I cell in cells)
+        {
+            if (cell.Y != from.Y)
+            {
+                offRow++;
+            }
+        }
+
+        Check(offRow == 0, "a route across flat ground stays on the flat",
+            $"{offRow} of {cells.Count} cells wander off the row");
+
+        Check(cells.Count == runLength, "and covers it in one step per cell",
+            $"{cells.Count} cells across a run of {runLength}");
     }
 
     // Every cell a route passes over, not just the corners it turns at.
