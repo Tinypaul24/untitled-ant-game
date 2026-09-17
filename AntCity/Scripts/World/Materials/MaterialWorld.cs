@@ -1124,16 +1124,36 @@ public partial class MaterialWorld : Node2D
     [Export]
     public bool HaulingEnabled { get; set; }
 
-    // The material a tile is predominantly made of, for a digger to know what she just scraped out.
-    public MaterialId GetTileMaterial(Vector2I tile)
+    // What a digger actually scrapes out of a tile.
+    //
+    // Read off the tile type, not off the matter. It used to sample the cell at the middle of the
+    // tile - and chipping clears cells in Bayer-dither order, where the middle cell happens to be
+    // the sixteenth of sixty-four visited, so it was gone by the first or second of the four chips
+    // a tile takes. Every chip after that read back Air and the spoil silently evaporated. Sampling
+    // any single cell has the same shape of bug; the tile type is the only thing that still says
+    // what the tile was made of while it is being taken apart.
+    //
+    // Loose soil rather than packed earth, because spoil has to behave like spoil: LooseDirt is a
+    // powder, so a tipped load slumps into a cone. Dirt is deliberately Solid - a heap of it would
+    // stand up in mid-air as a stack of cubes.
+    public MaterialId SpoilFor(Vector2I tile)
     {
-        return GetCell(TileToCellOrigin(tile) + new Vector2I(CellsPerTileAxis / 2, CellsPerTileAxis / 2));
+        return Grid != null && Grid.CanDig(tile) ? MaterialId.LooseDirt : MaterialId.Air;
     }
 
     // Scrapes loose material into an open tile. Returns how many cells found room; any beyond that
     // had nowhere to go, and the caller keeps them.
     public int EmitInto(Vector2I tile, int count, MaterialId material)
     {
+        // Air is not a material you can put somewhere. Without this the loop below sails past its
+        // own IsAir guard, SetCell short-circuits because the cell is already air, and placed++
+        // runs anyway - so it reported placing matter it had not placed, and the caller threw away
+        // the load it was still holding.
+        if (MaterialDatabase.Get(material).IsAir)
+        {
+            return 0;
+        }
+
         Vector2I origin = TileToCellOrigin(tile);
         int placed = 0;
 
@@ -1172,7 +1192,10 @@ public partial class MaterialWorld : Node2D
                 MaterialId id = GetCell(cell);
                 MaterialDefinition definition = MaterialDatabase.Get(id);
 
-                if (definition.IsAir || definition.Kind == MaterialKind.Solid)
+                // Powder only. It used to be "anything that is not solid", which included liquids -
+                // so a digger who broke into a water pocket carried the water off in her jaws and
+                // tipped it on the spoil heap.
+                if (definition.Kind != MaterialKind.Powder)
                 {
                     continue;
                 }
@@ -1186,25 +1209,50 @@ public partial class MaterialWorld : Node2D
         return taken;
     }
 
-    // Tips a carried load out, working upward as the lower tiles fill in.
-    public void Release(Vector2I tile, List<MaterialId> materials)
+    // Tips a carried load out, working upward as the lower tiles fill in. Returns how many grains
+    // had nowhere to go; those are still in the list, and still hers.
+    //
+    // It used to return void and clear the list unconditionally, so every grain it could not place -
+    // because the column was full, or because it walked off the top of the world - was deleted with
+    // no accounting anywhere. Matter conservation in this game is a settling invariant that the
+    // tests check to the cell, and this was a hole straight through it.
+    public int Release(Vector2I tile, List<MaterialId> materials)
     {
-        const int MaxTilesSearched = 6;
+        // As far up as the sky goes. Six tiles was arbitrary and too few: a mature spoil heap is
+        // taller than that, and every grain past the sixth tile was the leak above.
+        int maxTilesSearched = Grid != null ? Grid.SurfaceHeight : 6;
+        int kept = 0;
 
-        foreach (MaterialId material in materials)
+        // Indexed rather than foreach, because the list is compacted as it is walked and enumerating
+        // a list you are writing to throws.
+        for (int i = 0; i < materials.Count; i++)
         {
-            for (int up = 0; up < MaxTilesSearched; up++)
+            MaterialId material = materials[i];
+            bool placed = false;
+
+            for (int up = 0; up < maxTilesSearched && !placed; up++)
             {
                 Vector2I target = tile - new Vector2I(0, up);
 
-                if (!Grid.IsInBounds(target) || EmitInto(target, 1, material) > 0)
+                if (!Grid.IsInBounds(target))
                 {
                     break;
                 }
+
+                placed = EmitInto(target, 1, material) > 0;
+            }
+
+            if (!placed)
+            {
+                // Compacted in place, so a partly-tipped load costs no allocation. kept never runs
+                // ahead of i, so this only ever overwrites a grain already dealt with.
+                materials[kept++] = material;
             }
         }
 
-        materials.Clear();
+        materials.RemoveRange(kept, materials.Count - kept);
+
+        return kept;
     }
 
     // ---- destruction ------------------------------------------------------------------------

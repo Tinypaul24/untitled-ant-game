@@ -527,6 +527,16 @@ public partial class AntWorker : Area2D
         antennationTimer = 0;
         escaping = false;
 
+        // Dropped rather than tipped out.
+        //
+        // StopCurrentTask below releases a carried load into the world and refunds carried food to
+        // the colony, which is right when a job is interrupted and wrong here: the save already
+        // says what she is carrying, so tipping it out first and then handing the saved load back
+        // would leave the same soil existing twice. Whatever she happens to be holding is not part
+        // of the state being restored.
+        carriedGrains.Clear();
+        carriedFood = 0;
+
         AbandonCurrentJob();
         StopCurrentTask();
         wanderTimer.Stop();
@@ -551,8 +561,8 @@ public partial class AntWorker : Area2D
             GoIdle();
         }
 
+        // Last, because every one of those commands runs StopCurrentTask on its way in.
         carriedFood = save.CarriedFood;
-        carriedGrains.Clear();
 
         foreach (int material in save.CarriedGrains)
         {
@@ -1031,7 +1041,7 @@ public partial class AntWorker : Area2D
     private void OnDigTimeout()
     {
         // Read the material before the cell can flip to open tunnel on the final tick.
-        MaterialId material = materialWorld.GetTileMaterial(pendingDigCell);
+        MaterialId material = materialWorld.SpoilFor(pendingDigCell);
         Vector2I standingCell = gridManager.WorldToCell(Position);
 
         bool cellOpened = gridManager.DigGrain(pendingDigCell);

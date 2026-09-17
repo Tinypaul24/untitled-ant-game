@@ -59,6 +59,14 @@ public partial class BuildManager : Node2D
 
     private void OnTileObstructed(Vector2I cell)
     {
+        // Spoil settling on a heap is a heap, not a blocked passage. Above the surface there is no
+        // corridor to lose, and queueing a dig job for every tile of a growing mound would have the
+        // colony endlessly excavating its own spoil tip.
+        if (cell.Y < GridManager.SurfaceHeight - GridManager.GrassDepth)
+        {
+            return;
+        }
+
         if (GridManager.CanDig(cell))
         {
             obstructions.Add(cell);

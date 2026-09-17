@@ -36,6 +36,9 @@ public partial class TerrainTests : Node
         GrassBurnsAndStaysOnTheSurface();
         DiggingLeavesCleanTunnels();
         BoredTunnelsLeaveNothingHanging();
+        SpoilIsWhatTheTileIsMadeOf();
+        ReleaseHandsBackWhatItCannotPlace();
+        DiggingInTheSkyLeavesSky();
         NestWallsCementThemselves();
         RoomsCanBePlacedAndFinished();
         SmoothedRoutesStayWalkable();
@@ -673,6 +676,118 @@ public partial class TerrainTests : Node
         Check(walkable >= 6, "a dug corridor is still walkable once the soil settles",
             $"{walkable} of 8 tiles standable");
 
+    }
+
+    // What a digger scrapes out has to survive the digging.
+    //
+    // The spoil material used to be sampled from the cell at the middle of the tile, and chipping
+    // clears cells in Bayer-dither order where that cell is the sixteenth of sixty-four visited -
+    // so it was already gone by the first or second of the four chips a tile takes, and every chip
+    // after that read back Air. Half of every tile's spoil evaporated before anybody carried it.
+    private void SpoilIsWhatTheTileIsMadeOf()
+    {
+        Vector2I tile = FindDiggableNear(grid.NestCenterCell + new Vector2I(-70, 9));
+
+        if (!grid.CanDig(tile))
+        {
+            Check(false, "a diggable tile could be found to scrape");
+            return;
+        }
+
+        Check(materials.SpoilFor(tile) == MaterialId.LooseDirt,
+            "an untouched tile yields loose soil", $"{materials.SpoilFor(tile)}");
+
+        // Three of the four grains gone - the state the old sampling read back as empty air.
+        for (int grain = 0; grain < GridManager.GrainsPerCell - 1; grain++)
+        {
+            grid.DigGrain(tile);
+        }
+
+        Check(materials.SpoilFor(tile) == MaterialId.LooseDirt,
+            "a tile three-quarters dug still yields loose soil", $"{materials.SpoilFor(tile)}");
+
+        // And loose soil, not packed earth. Dirt is Solid on purpose, so a heap of it would stand
+        // up in mid-air as a stack of cubes instead of slumping into a cone.
+        Check(MaterialDatabase.Get(MaterialId.LooseDirt).Kind == MaterialKind.Powder,
+            "spoil is a powder, so a tipped load slumps");
+
+        grid.Dig(tile);
+
+        Check(materials.SpoilFor(tile) == MaterialId.Air,
+            "an opened tile has nothing left to scrape", $"{materials.SpoilFor(tile)}");
+    }
+
+    // A load that will not fit stays on her back.
+    //
+    // Release used to return void and clear the list whatever happened, so every grain it could not
+    // place - because the column was full, or because it walked off the top of the world - was
+    // deleted with no accounting. Matter conservation here is checked to the cell elsewhere in this
+    // file, and this was a hole straight through it.
+    private void ReleaseHandsBackWhatItCannotPlace()
+    {
+        Vector2I solid = FindBuriedDiggableNear(grid.NestCenterCell + new Vector2I(-74, 14));
+
+        var carried = new List<MaterialId>();
+
+        for (int i = 0; i < 8; i++)
+        {
+            carried.Add(MaterialId.LooseDirt);
+        }
+
+        int before = Count(MaterialId.LooseDirt);
+        int leftover = materials.Release(solid, carried);
+
+        Check(leftover == 8, "a load tipped into solid ground is handed straight back", $"{leftover} of 8");
+        Check(carried.Count == 8, "and is still in her jaws", $"{carried.Count} grains");
+        Check(Count(MaterialId.LooseDirt) == before, "nothing was created on the way",
+            $"{before} became {Count(MaterialId.LooseDirt)}");
+
+        // The other half of the bargain: into open sky it all goes, and the list comes back empty.
+        Vector2I sky = new Vector2I(grid.NestCenterCell.X - 74, 4);
+
+        int placedBefore = Count(MaterialId.LooseDirt);
+        int stillHeld = materials.Release(sky, carried);
+
+        Check(stillHeld == 0, "a load tipped into open sky all lands", $"{stillHeld} left over");
+        Check(carried.Count == 0, "and her jaws come back empty", $"{carried.Count} grains");
+        Check(Count(MaterialId.LooseDirt) == placedBefore + 8, "every grain is accounted for",
+            $"{placedBefore} became {Count(MaterialId.LooseDirt)}");
+    }
+
+    // Digging into a spoil heap leaves sky, not tunnel.
+    //
+    // Dig wrote Tunnel unconditionally, which above the surface is both wrong and self-perpetuating:
+    // the next spoil to land in that tile makes the simulation report a blocked passage, which
+    // queues a dig job, which opens it again, which lets more spoil in.
+    private void DiggingInTheSkyLeavesSky()
+    {
+        Vector2I sky = new Vector2I(grid.NestCenterCell.X - 78, grid.SurfaceHeight - grid.GrassDepth - 3);
+
+        // Pile enough soil into it to make it solid ground, the way a spoil heap does.
+        materials.FillTile(sky, MaterialId.LooseDirt);
+        materials.DeriveDirtyTiles();
+
+        Check(!grid.IsTunnel(sky), "a tile full of spoil reads as solid ground",
+            $"{grid.GetTileAt(sky)}");
+
+        int obstructions = 0;
+        void CountObstruction(Vector2I cell) => obstructions++;
+
+        grid.TileObstructed += CountObstruction;
+
+        grid.Dig(sky);
+
+        Check(grid.GetTileAt(sky) == GridManager.TileType.Air,
+            "digging out a heap above the surface leaves sky", $"{grid.GetTileAt(sky)}");
+
+        // Refill it. Nothing should report a blocked passage, because there was never a corridor.
+        materials.FillTile(sky, MaterialId.LooseDirt);
+        materials.DeriveDirtyTiles();
+
+        grid.TileObstructed -= CountObstruction;
+
+        Check(obstructions == 0, "spoil settling back on a heap is not a blocked passage",
+            $"{obstructions} obstructions reported");
     }
 
     // A bored tunnel keeps a lip of earth overhead so the channel is the size of an ant. This is

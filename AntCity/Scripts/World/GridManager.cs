@@ -264,7 +264,17 @@ public partial class GridManager : Node2D
 
         grainsRemoved.Remove(cell);
 
-        SetTile(cell, TileType.Tunnel);
+        // Digging into a spoil heap leaves sky, not tunnel.
+        //
+        // This was Tunnel unconditionally, which is wrong above the surface and self-perpetuating:
+        // an ant buried by a tipped load digs herself out, that sky tile is now marked Tunnel, and
+        // the next spoil to land in it makes SetTileFromSimulation see `previous == Tunnel` and
+        // report a blocked passage. That queues a dig job, which opens it again, which lets more
+        // spoil in. The whole loop comes from one tile being labelled as a corridor because
+        // somebody dug it.
+        //
+        // Matches what the simulation already does for its own writes - see PassableTileFor.
+        SetTile(cell, cell.Y < SurfaceHeight - GrassDepth ? TileType.Air : TileType.Tunnel);
 
         // Tunnelling into a food source salvages it rather than throwing it away.
         //
@@ -503,19 +513,6 @@ public partial class GridManager : Node2D
     public TileType GetTileAt(Vector2I cell)
     {
         return GetTile(cell);
-    }
-
-    // Loose grains have filled this cell right up, so it becomes ordinary solid ground again.
-    public void PackCellToDirt(Vector2I cell)
-    {
-        if (!IsInBounds(cell))
-        {
-            return;
-        }
-
-        grainsRemoved.Remove(cell);
-        SetTile(cell, TileType.Dirt);
-        EmitSignal(SignalName.TerrainChanged);
     }
 
     private static bool IsFoodTileType(TileType type)
@@ -775,36 +772,6 @@ public partial class GridManager : Node2D
         }
 
         GD.Print("Colony landed on the surface.");
-    }
-
-    // A zigzag staircase from the chamber up to daylight. Each row steps one cell sideways, so every
-    // move along it is a diagonal an ant can walk, and the whole thing stays two cells wide.
-    private void CarveEntranceRamp(int floorY)
-    {
-        int rampX = NestCenterCell.X + 2;
-
-        for (int y = floorY; y >= SurfaceHeight - 1; y--)
-        {
-            ForceDig(new Vector2I(rampX + ((floorY - y) % 2), y));
-        }
-    }
-
-    private void ClearSurfaceEntrance()
-    {
-        int surfaceRow = SurfaceHeight - 1;
-
-        if (surfaceRow < 0)
-        {
-            return;
-        }
-
-        // Entrance, plus the dump cell and pile column beside it, so haulers always have clear ground.
-        for (int x = NestCenterCell.X - 1; x <= NestCenterCell.X + 6; x++)
-        {
-            Vector2I cell = new Vector2I(x, surfaceRow);
-            foodRemaining.Remove(cell);
-            SetTile(cell, TileType.Grass);
-        }
     }
 
     // Used by world generation to guarantee the nest and its entrance shaft are always clear.
