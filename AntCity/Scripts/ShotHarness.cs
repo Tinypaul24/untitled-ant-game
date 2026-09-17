@@ -67,6 +67,21 @@ public partial class ShotHarness : Node
         if (frames == 520)
         {
             Save("bore.png");
+            return;
+        }
+
+        // Long after founding, zoomed out, because a trail is a colony-scale pattern: the question
+        // is whether the traffic has a shape, and you cannot see a shape one corridor at a time.
+        if (frames == 5400)
+        {
+            camera.Zoom = new Vector2(1f, 1f);
+            camera.Position = grid.CellToWorld(grid.NestCenterCell + new Vector2I(0, 6));
+            return;
+        }
+
+        if (frames == 5420)
+        {
+            Save("trails.png");
 
             GetTree().Quit();
         }

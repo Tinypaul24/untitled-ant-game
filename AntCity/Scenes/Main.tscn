@@ -16,6 +16,7 @@
 [ext_resource type="Script" path="res://AntCity/Scripts/World/Materials/MaterialWorld.cs" id="16_matworld"]
 [ext_resource type="Script" path="res://AntCity/Scripts/World/Materials/MaterialRenderer.cs" id="17_matrender"]
 [ext_resource type="Script" path="res://AntCity/Scripts/World/Materials/MaterialDebugTool.cs" id="18_matdebug"]
+[ext_resource type="Script" path="res://AntCity/Scripts/World/PheromoneField.cs" id="19_pheromone"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_lswqd"]
 texture = ExtResource("3_r1jm0")
@@ -82,6 +83,10 @@ World = NodePath("../MaterialWorld")
 script = ExtResource("18_matdebug")
 World = NodePath("../MaterialWorld")
 Renderer = NodePath("../MaterialRenderer")
+
+[node name="PheromoneField" type="Node2D" parent="." node_paths=PackedStringArray("Grid")]
+script = ExtResource("19_pheromone")
+Grid = NodePath("../GridManager")
 
 [node name="Queen" parent="." unique_id=1790484239 instance=ExtResource("4_lswqd")]
 position = Vector2(320, 192)

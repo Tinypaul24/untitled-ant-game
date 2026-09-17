@@ -21,6 +21,7 @@ public partial class ColonyProbe : Node
 
     private BuildManager build;
     private ColonyFounding founding;
+    private PheromoneField pheromones;
     private double elapsed;
     private double sinceReport;
     private int startingTunnels;
@@ -34,6 +35,7 @@ public partial class ColonyProbe : Node
         materials = main.GetNode<MaterialWorld>("MaterialWorld");
         build = main.GetNode<BuildManager>("BuildManager");
         founding = main.GetNode<ColonyFounding>("ColonyFounding");
+        pheromones = main.GetNode<PheromoneField>("PheromoneField");
 
         startingTunnels = CountTunnels();
 
@@ -163,7 +165,7 @@ public partial class ColonyProbe : Node
         GD.Print($"t={elapsed:F0}s  ants={ants}/{colony.Capacity}  food={colony.Food}/{colony.FoodCapacity}  " +
                  $"rooms=[{rooms.Trim()}]  " +
                  $"eggs={colony.Egg} larvae={colony.LarvaCount}  upkeep/hr={colony.UpkeepPerHour}  " +
-                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  [{breakdown.Trim()}]");
+                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  trail={pheromones.MarkedCells}  [{breakdown.Trim()}]");
     }
 
     // Open ground near the colony, as a proxy for "has anything been excavated".

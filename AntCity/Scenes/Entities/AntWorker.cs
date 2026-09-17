@@ -46,9 +46,13 @@ public partial class AntWorker : Area2D
     private const float ForageSeconds = 1f;
     private const int ForageCarryCapacity = 10;
     private const int HarvestPerTick = 2;
-    // How far afield an idle worker will look for something to forage, in world units. Expressed in
-    // tiles rather than as a pixel literal, so it means the same thing if the tile size ever moves.
-    private const int ForageSearchTiles = 24;
+    // How far an idle worker can spot food for herself, in tiles.
+    //
+    // It used to be twenty-four, which was not sight but telepathy: every worker knew every deposit
+    // for four hundred pixels in all directions, through rock, whether or not anyone had ever been
+    // there. Eight tiles is roughly what she could plausibly find by casting about, and everything
+    // beyond it she has to be led to by somebody else's trail.
+    private const int ForageSightTiles = 8;
     // Each dig tick scrapes out a share of the cell; a full load is three cells worth, matching the old haul cadence.
     private const int GrainsPerDigTick = MaterialWorld.CellsPerTile / GridManager.GrainsPerCell;
     private const int HaulCapacityGrains = MaterialWorld.CellsPerTile * 3;
@@ -106,6 +110,7 @@ public partial class AntWorker : Area2D
     private BuildManager buildManager;
     private ColonyManager colonyManager;
     private MaterialWorld materialWorld;
+    private PheromoneField pheromones;
 
     private State state = State.Idle;
     private bool isSelected;
@@ -142,6 +147,8 @@ public partial class AntWorker : Area2D
     private Vector2I pendingDigCell;
     private Action pendingDigCallback;
     private double hazardCheckTimer;
+    private Vector2I lastTrailCell = new Vector2I(int.MinValue, int.MinValue);
+    private bool followedTrail;
 
     // True while she is walking a route out of danger, which is the one time she is allowed to head
     // into a hazardous cell on purpose.
@@ -178,6 +185,7 @@ public partial class AntWorker : Area2D
         buildManager = GetNode<BuildManager>("../BuildManager");
         colonyManager = GetNode<ColonyManager>("../ColonyManager");
         materialWorld = GetNode<MaterialWorld>("../MaterialWorld");
+        pheromones = GetNode<PheromoneField>("../PheromoneField");
 
         digTimer.OneShot = true;
         digTimer.WaitTime = DigSecondsPerGrain;
@@ -287,6 +295,7 @@ public partial class AntWorker : Area2D
         Position += velocity * (float)delta;
         UpdateFacing(heading);
         Weave(speed * (float)delta);
+        LayTrail();
 
         WatchForStall(delta);
     }
@@ -675,13 +684,81 @@ public partial class AntWorker : Area2D
 
         // Food is the one thing the colony always needs, and nobody else is going to fetch it. An idle
         // worker goes looking rather than milling about, which is what lets the colony feed itself.
-        if (gridManager.TryFindForageTarget(Position, ForageSearchTiles * gridManager.CellSize, out Vector2I food))
+        if (gridManager.TryFindForageTarget(Position, ForageSightTiles * gridManager.CellSize, out Vector2I food))
         {
             CommandForage(food);
             return;
         }
 
+        // Nothing she can find herself. Follow the colony's traffic out to wherever it leads and
+        // look again from there - which is how a worker finds a source she was never told about.
+        if (TryFollowTrail())
+        {
+            return;
+        }
+
         PickWanderTarget();
+    }
+
+    // A laden forager scent-marks the ground on her way home.
+    //
+    // Only on the way home, and only with food: that is what makes the trail mean something. A
+    // worker wandering about would mark every dead end she looked down, and a trail that leads
+    // everywhere leads nowhere.
+    //
+    // Once per tile entered rather than per frame, so a slow ant and a fast ant lay the same trail
+    // and the strength of it reflects how many workers used the route, not how long they took.
+    private void LayTrail()
+    {
+        Vector2I cell = gridManager.WorldToCell(Position);
+
+        if (cell == lastTrailCell)
+        {
+            return;
+        }
+
+        lastTrailCell = cell;
+
+        if (carriedFood > 0)
+        {
+            pheromones.Deposit(cell);
+        }
+    }
+
+    // Nothing in sight, so go and look where somebody else has been.
+    //
+    // She walks the trail outward and then simply goes idle again, which runs the short-range search
+    // from wherever she has ended up. She is not told there is food there - she is told this is a
+    // direction another ant came back from, and she goes and sees.
+    private bool TryFollowTrail()
+    {
+        if (followedTrail)
+        {
+            // One go per idle spell. Otherwise a trail whose food has run out is a loop: walk to the
+            // end, find nothing, go idle, walk to the end.
+            followedTrail = false;
+            return false;
+        }
+
+        Vector2I here = gridManager.WorldToCell(Position);
+
+        if (!pheromones.TryFollowOutward(here, out Vector2I end))
+        {
+            return false;
+        }
+
+        Vector2I target = gridManager.FindNearestTunnelCell(end);
+        List<Vector2I> route = gridManager.FindTunnelPath(here, target);
+
+        if (route == null || target == here)
+        {
+            return false;
+        }
+
+        followedTrail = true;
+        FollowPath(route, GoIdle);
+
+        return true;
     }
 
     // Buried by settling spoil. Chip the cell she is standing in back open before taking any job.
