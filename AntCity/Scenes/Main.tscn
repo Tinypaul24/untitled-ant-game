@@ -57,11 +57,12 @@ z_index = 10
 script = ExtResource("9_selection")
 BuildManager = NodePath("../BuildManager")
 
-[node name="BuildManager" type="Node2D" parent="." node_paths=PackedStringArray("GridManager", "ColonyManager")]
+[node name="BuildManager" type="Node2D" parent="." node_paths=PackedStringArray("GridManager", "ColonyManager", "MaterialWorld")]
 z_index = 10
 script = ExtResource("11_build")
 GridManager = NodePath("../GridManager")
 ColonyManager = NodePath("../ColonyManager")
+MaterialWorld = NodePath("../MaterialWorld")
 
 [node name="Ground" type="TileMapLayer" parent="." unique_id=883923214]
 tile_set = SubResource("TileSet_xkah1")

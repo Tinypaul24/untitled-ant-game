@@ -15,7 +15,7 @@ public partial class BuildManager : Node2D
     // Ground another room already owns - a different problem from rock, and worth saying so.
     private static readonly Color TakenPreviewColor = new Color(1f, 0.55f, 0.2f, 0.4f);
     // The HardenedDirt the ants will cement this ring into, so the preview shows the finished wall.
-    private static readonly Color WallPreviewColor = new Color(0.35f, 0.29f, 0.24f, 0.55f);
+    private static readonly Color WallPreviewColor = new Color(0.63f, 0.54f, 0.45f, 0.5f);
     // A hole in the wall. One is a doorway; a ring full of them is an open cavern.
     private static readonly Color BreachPreviewColor = new Color(0.25f, 0.6f, 0.9f, 0.3f);
 
@@ -45,6 +45,25 @@ public partial class BuildManager : Node2D
     public delegate void PreviewChangedEventHandler(string reason, bool valid);
 
     public bool IsPlacing => pendingType.HasValue;
+
+
+    [Export]
+    public MaterialWorld MaterialWorld { get; set; }
+
+    // The colony plasters the wall of a finished chamber, the same way it plasters its burrow.
+    //
+    // Registered when the room stops being a hole in the ground and starts being a room - never
+    // while it is still Excavating, because at that point the diggers have not yet cut the doorway
+    // and there would be nothing to plaster around.
+    private void StartCementingWalls(Room room)
+    {
+        MaterialWorld?.AddCementSite(room.Footprint.Grow(1), room.Footprint);
+    }
+
+    private void StopCementingWalls(Room room)
+    {
+        MaterialWorld?.RemoveCementSite(room.Footprint.Grow(1), room.Footprint);
+    }
 
     public override void _Ready()
     {
@@ -368,6 +387,13 @@ public partial class BuildManager : Node2D
             });
 
             room.SetOwnedCells(owned);
+
+            // Derived state, not saved state: a restored room past Excavating goes straight back on
+            // the plastering list.
+            if (room.State != Room.RoomState.Excavating)
+            {
+                StartCementingWalls(room);
+            }
         }
     }
 
@@ -513,6 +539,7 @@ public partial class BuildManager : Node2D
         if (room.IsFullyDug)
         {
             room.BeginFurnishing();
+            StartCementingWalls(room);
         }
     }
 
@@ -568,6 +595,12 @@ public partial class BuildManager : Node2D
         room.Initialize(GridManager.CellSize, pendingCells);
         GetParent().AddChild(room);
         rooms.Add(room);
+
+        // A room that needed no digging is already past Excavating, so it starts cementing now.
+        if (room.State != Room.RoomState.Excavating)
+        {
+            StartCementingWalls(room);
+        }
 
         foreach (Vector2I cell in roomCells)
         {
@@ -671,6 +704,7 @@ public partial class BuildManager : Node2D
         }
 
         rooms.Remove(room);
+        StopCementingWalls(room);
         room.GetParent()?.RemoveChild(room);
         room.QueueFree();
 

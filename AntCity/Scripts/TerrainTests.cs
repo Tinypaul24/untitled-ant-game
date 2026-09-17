@@ -42,6 +42,7 @@ public partial class TerrainTests : Node
         NestWallsCementThemselves();
         RoomsCanBePlacedAndFinished();
         RoomsNeedWallsAroundThem();
+        RoomWallsCementThemselves();
         SmoothedRoutesStayWalkable();
         RoutesDoNotBobUpAndDown();
         DugCorridorsStayWalkable();
@@ -871,7 +872,7 @@ public partial class TerrainTests : Node
         // The hardening sweep is driven from _Process, so give it real frames rather than ticks.
         for (int pass = 0; pass < 400; pass++)
         {
-            materials.HardenNestWallsForTest(0.25);
+            materials.CementWallsForTest(0.25);
         }
 
         int after = CountAround(nest, 8, MaterialId.HardenedDirt);
@@ -991,6 +992,151 @@ public partial class TerrainTests : Node
     }
 
     // Each chamber is a chamber, not part of an open-plan cavern.
+
+    // Ants plaster the wall of a finished chamber, the same way they plaster the burrow.
+    //
+    // Two properties matter more than the plastering itself, and both are asserted here.
+    //
+    // Cementing must never change a tile's derived type. SetCell only ever swaps one solid-or-powder
+    // material for another and DeriveTile counts Solid and Powder identically, so hardening cannot
+    // seal a doorway, cannot bury an ant, and cannot flip an open tile shut. That is the whole
+    // reason it is safe to run a sweep over a room somebody is standing in.
+    //
+    // And hardened earth is still diggable - it derives to TileType.Dirt, so CanDig stays true. The
+    // wall stops pathing and stops loose spoil slumping through it; it does not stop an ant. A
+    // chamber whose walls could not be dug would be a chamber nobody could reach.
+    private void RoomWallsCementThemselves()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+
+        colony.AddFood(300);
+
+        Vector2I origin = grid.NestCenterCell + new Vector2I(-118, 10);
+        var footprint = new Rect2I(origin, new Vector2I(3, 2));
+
+        // Dug out in advance, so the room goes straight to furnishing and starts cementing.
+        for (int x = 0; x < 3; x++)
+        {
+            for (int y = 0; y < 2; y++)
+            {
+                grid.Dig(origin + new Vector2I(x, y));
+            }
+        }
+
+        // A doorway, so this is a chamber off a corridor rather than a sealed pocket.
+        Vector2I doorway = origin + new Vector2I(-1, 1);
+        grid.Dig(doorway);
+
+        materials.DeriveDirtyTiles();
+
+        if (!build.TryCreateRoom(footprint, BuildingType.Granary))
+        {
+            Check(false, "a room could be placed to cement");
+            return;
+        }
+
+        Room placed = null;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is Room room && room.Footprint.Position == origin)
+            {
+                placed = room;
+            }
+        }
+
+        Check(placed != null, "the room to cement exists");
+
+        if (placed == null)
+        {
+            return;
+        }
+
+        // What the ring looks like before anybody plasters it, so the assertions below are about
+        // the sweep rather than about the terrain.
+        var typesBefore = new Dictionary<Vector2I, GridManager.TileType>();
+        int hardenedBefore = 0;
+
+        foreach (Vector2I cell in RingCellsOf(footprint))
+        {
+            typesBefore[cell] = grid.GetTileAt(cell);
+            hardenedBefore += CountCellsIn(cell, MaterialId.HardenedDirt);
+        }
+
+        // The sweep is driven from _Process, so give it real frames rather than ticks.
+        for (int pass = 0; pass < 400; pass++)
+        {
+            materials.CementWallsForTest(0.25);
+        }
+
+        materials.DeriveDirtyTiles();
+
+        int hardenedAfter = 0;
+        int changedType = 0;
+
+        foreach (Vector2I cell in RingCellsOf(footprint))
+        {
+            hardenedAfter += CountCellsIn(cell, MaterialId.HardenedDirt);
+
+            if (grid.GetTileAt(cell) != typesBefore[cell])
+            {
+                changedType++;
+            }
+        }
+
+        Check(hardenedAfter > hardenedBefore, "ants cement the wall around a finished chamber",
+            $"{hardenedBefore} became {hardenedAfter}");
+        Check(changedType == 0, "cementing never changes what a tile is",
+            $"{changedType} ring tiles changed type");
+        Check(grid.IsTunnel(doorway), "the doorway is still open");
+        Check(grid.CanDig(origin + new Vector2I(-1, 0)), "a cemented wall can still be dug through");
+
+        // And a room that has been pulled down stops being plastered, or the colony keeps
+        // maintaining a chamber that no longer exists - a leak nothing would ever complain about.
+        build.Demolish(placed);
+
+        int afterDemolish = 0;
+
+        foreach (Vector2I cell in RingCellsOf(footprint))
+        {
+            afterDemolish += CountCellsIn(cell, MaterialId.HardenedDirt);
+        }
+
+        for (int pass = 0; pass < 200; pass++)
+        {
+            materials.CementWallsForTest(0.25);
+        }
+
+        int afterMore = 0;
+
+        foreach (Vector2I cell in RingCellsOf(footprint))
+        {
+            afterMore += CountCellsIn(cell, MaterialId.HardenedDirt);
+        }
+
+        Check(afterMore == afterDemolish, "a demolished chamber stops being plastered",
+            $"{afterDemolish} became {afterMore}");
+    }
+
+    private List<Vector2I> RingCellsOf(Rect2I footprint)
+    {
+        var cells = new List<Vector2I>();
+        Rect2I ring = footprint.Grow(1);
+
+        for (int x = ring.Position.X; x < ring.Position.X + ring.Size.X; x++)
+        {
+            for (int y = ring.Position.Y; y < ring.Position.Y + ring.Size.Y; y++)
+            {
+                if (!footprint.HasPoint(new Vector2I(x, y)))
+                {
+                    cells.Add(new Vector2I(x, y));
+                }
+            }
+        }
+
+        return cells;
+    }
     //
     // Nothing used to look outside a footprint at all, so two rooms could share an open edge and a
     // room could be placed in mid-air. Both rules are checked through the same public entry point

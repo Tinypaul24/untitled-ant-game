@@ -114,6 +114,23 @@ public partial class ShotHarness : Node
         if (frames == 5475)
         {
             Save("preview.png");
+            return;
+        }
+
+        // The cemented wall, several seconds later. The room shot above is taken a third of a
+        // second after placement, which is a handful of sweep attempts - far too early to see a
+        // wall. This waits for one.
+        if (frames == 5480)
+        {
+            GetNode<BuildManager>("Main/BuildManager").CancelPlacement();
+            camera.Zoom = new Vector2(4f, 4f);
+            camera.Position = grid.CellToWorld(RoomOrigin + new Vector2I(2, 1));
+            return;
+        }
+
+        if (frames == 5760)
+        {
+            Save("wall.png");
 
             GetTree().Quit();
         }

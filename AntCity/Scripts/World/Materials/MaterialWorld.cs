@@ -183,7 +183,7 @@ public partial class MaterialWorld : Node2D
         // work nobody sees, and pathfinding only reads the grid between frames anyway.
         DeriveDirtyTiles();
 
-        HardenNestWalls(delta);
+        CementWalls(delta);
     }
 
     // Ants cementing their tunnel walls with saliva, the way real ones do.
@@ -195,14 +195,66 @@ public partial class MaterialWorld : Node2D
     // gets, and the walls harden at a pace you notice over minutes rather than seconds.
     // Driven from _Process in play; the tests call it directly so they can run the clock forward
     // without waiting on real frames.
-    public void HardenNestWallsForTest(double delta) => HardenNestWalls(delta);
+    public void CementWallsForTest(double delta) => CementWalls(delta);
 
-    private void HardenNestWalls(double delta)
+    // Where the colony is currently plastering.
+    //
+    // This used to be a fixed square around the nest, which is fine for a burrow and useless for a
+    // chamber somebody dug forty tiles out. Sites are registered instead: the nest permanently, and
+    // every room's perimeter once it has been excavated.
+    private readonly List<Rect2I> cementSites = new();
+    private int nextSite;
+
+    public void AddCementSite(Rect2I site)
+    {
+        if (!cementSites.Contains(site))
+        {
+            cementSites.Add(site);
+        }
+    }
+
+    public void RemoveCementSite(Rect2I site)
+    {
+        cementSites.Remove(site);
+    }
+
+    // Tiles this site will not plaster. A room's interior is the room; only its ring is the wall,
+    // and without this most of a small site's attempts would land inside the cavity and be wasted.
+    private readonly List<Rect2I> cementHoles = new();
+
+    public void AddCementSite(Rect2I site, Rect2I hole)
+    {
+        AddCementSite(site);
+
+        if (!cementHoles.Contains(hole))
+        {
+            cementHoles.Add(hole);
+        }
+    }
+
+    public void RemoveCementSite(Rect2I site, Rect2I hole)
+    {
+        RemoveCementSite(site);
+        cementHoles.Remove(hole);
+    }
+
+    // Ants cementing their tunnel walls with saliva, the way real ones do.
+    //
+    // A sweep rather than a reaction, for a specific reason: a reaction fires from a cell the tick
+    // visits, and a wall that is merely sitting there is asleep. This walks a handful of candidate
+    // cells per pass instead, so the cost is a fixed trickle no matter how big the colony gets.
+    //
+    // Sites are taken in turn against that same fixed budget rather than each getting its own, so
+    // twenty chambers cost exactly what one does. A colony that plastered proportionally to its own
+    // size would get slower the more it built, which is the wrong way round.
+    private void CementWalls(double delta)
     {
         if (Grid == null)
         {
             return;
         }
+
+        EnsureNestSite();
 
         hardenTimer += delta;
 
@@ -213,13 +265,19 @@ public partial class MaterialWorld : Node2D
 
         hardenTimer = 0;
 
-        Vector2I nest = Grid.NestCenterCell;
-
         for (int attempt = 0; attempt < HardenAttemptsPerPass; attempt++)
         {
-            Vector2I tile = nest + new Vector2I(
-                blastRandom.RandiRange(-HardenRadiusTiles, HardenRadiusTiles),
-                blastRandom.RandiRange(-HardenRadiusTiles, HardenRadiusTiles));
+            Rect2I site = cementSites[nextSite % cementSites.Count];
+            nextSite++;
+
+            Vector2I tile = new Vector2I(
+                site.Position.X + blastRandom.RandiRange(0, site.Size.X - 1),
+                site.Position.Y + blastRandom.RandiRange(0, site.Size.Y - 1));
+
+            if (IsInsideACementHole(tile))
+            {
+                continue;
+            }
 
             // Only ground the simulation owns, and only where a chunk already exists - hardening
             // must never be the thing that materialises new terrain.
@@ -250,16 +308,62 @@ public partial class MaterialWorld : Node2D
         }
     }
 
+    private bool IsInsideACementHole(Vector2I tile)
+    {
+        foreach (Rect2I hole in cementHoles)
+        {
+            if (hole.HasPoint(tile))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // The burrow itself, added once and never removed. Byte-for-byte the old behaviour: the same
+    // square, the same radius. The nest is where the colony lives whether or not a room has been
+    // placed in it, and it has to keep cementing before there are any rooms at all.
+    private void EnsureNestSite()
+    {
+        if (nestSite.HasValue)
+        {
+            return;
+        }
+
+        Vector2I nest = Grid.NestCenterCell;
+        int span = HardenRadiusTiles * 2 + 1;
+
+        nestSite = new Rect2I(nest - new Vector2I(HardenRadiusTiles, HardenRadiusTiles), new Vector2I(span, span));
+
+        AddCementSite(nestSite.Value);
+    }
+
+    private Rect2I? nestSite;
+
+    // Four orthogonal neighbours, and a cell with no chunk behind it counts as earth rather than as
+    // air.
+    //
+    // That last part matters: GetCell falls through to the tile grid for a cell whose chunk does not
+    // exist, and the tile grid generates on demand - so a candidate sitting on a chunk boundary
+    // could make the plastering sweep the thing that materialises new terrain, which the guard
+    // above exists to prevent.
     private bool TouchesAir(Vector2I cell)
     {
-        return MaterialDatabase.Get(GetCell(cell + Vector2I.Up)).IsAir
-            || MaterialDatabase.Get(GetCell(cell + Vector2I.Down)).IsAir
-            || MaterialDatabase.Get(GetCell(cell + Vector2I.Left)).IsAir
-            || MaterialDatabase.Get(GetCell(cell + Vector2I.Right)).IsAir;
+        return IsAirAndMaterialised(cell + Vector2I.Up)
+            || IsAirAndMaterialised(cell + Vector2I.Down)
+            || IsAirAndMaterialised(cell + Vector2I.Left)
+            || IsAirAndMaterialised(cell + Vector2I.Right);
+    }
+
+    private bool IsAirAndMaterialised(Vector2I cell)
+    {
+        return TryGetChunkCached(CellToChunk(cell), out _) && MaterialDatabase.Get(GetCell(cell)).IsAir;
     }
 
     // How far from the nest the colony bothers to plaster, how often it works, and how many cells it
-    // tries per pass. Tuned for a trickle: the core of a burrow cements over a few minutes.
+    // tries per pass. Tuned for a trickle: the core of a burrow cements over a few minutes, and a
+    // room's ring - sixteen tiles against the nest's eight hundred - in seconds.
     private const int HardenRadiusTiles = 14;
     private const double HardenIntervalSeconds = 0.25;
     private const int HardenAttemptsPerPass = 24;
