@@ -82,8 +82,59 @@ public partial class ShotHarness : Node
         if (frames == 5420)
         {
             Save("trails.png");
+            return;
+        }
+
+        // A room with stone in the middle of it, selected. Two things only a picture can answer:
+        // whether a room now reads as the cells it owns rather than as a rectangle over ground it
+        // does not, and whether the inspector says anything useful about it.
+        if (frames == 5430)
+        {
+            PlaceRoomWithRockInIt();
+
+            camera.Zoom = new Vector2(4f, 4f);
+            camera.Position = grid.CellToWorld(RoomOrigin + new Vector2I(2, 1));
+            return;
+        }
+
+        if (frames == 5450)
+        {
+            Save("room.png");
 
             GetTree().Quit();
+        }
+    }
+
+    private Vector2I RoomOrigin => grid.NestCenterCell + new Vector2I(-16, 7);
+
+    // Dug in advance so the room skips straight to furnishing, with two cells forced to stone so the
+    // room has to build around them.
+    private void PlaceRoomWithRockInIt()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+
+        for (int y = 0; y < 2; y++)
+        {
+            for (int x = 0; x < 4; x++)
+            {
+                grid.Dig(RoomOrigin + new Vector2I(x, y));
+            }
+        }
+
+        grid.SetTileFromSimulation(RoomOrigin + new Vector2I(1, 0), GridManager.TileType.Rock);
+        grid.SetTileFromSimulation(RoomOrigin + new Vector2I(2, 1), GridManager.TileType.Rock);
+
+        colony.AddFood(200);
+        build.TryCreateRoom(new Rect2I(RoomOrigin, new Vector2I(4, 2)), BuildingType.Nursery);
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is Room room && room.Footprint.Position == RoomOrigin)
+            {
+                build.ReportFurnishDone(room);
+                build.SelectRoom(room);
+            }
         }
     }
 

@@ -34,7 +34,9 @@ public partial class Queen : Node2D
 
         layAccumulator += delta;
 
-        if (layAccumulator < LayIntervalSeconds)
+        // Divided by the multiplier rather than the interval being scaled, so a Royal Chamber built
+        // mid-wait takes effect on the clutch she is already working on instead of the one after.
+        if (layAccumulator < LayIntervalSeconds / colonyManager.LaySpeedMultiplier)
         {
             return;
         }

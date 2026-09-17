@@ -18,6 +18,10 @@ public partial class ColonyManager : Node
     public int LarvaCount { get; private set; } = 0;
     public int Capacity { get; private set; } = 10;
     public float HatchSpeedMultiplier { get; private set; } = 1f;
+    // Above one: the Queen lays that much faster. Raised by Royal Chamber cells.
+    public float LaySpeedMultiplier { get; private set; } = 1f;
+    // Food the colony grows for itself each in-game hour, from Fungus Farm cells.
+    public int FoodPerHourFarmed => fungusCellTotal;
 
     // Whether the Queen is currently allowed to lay. The player owns this decision - growth costs
     // food and every new ant raises upkeep, so when the colony expands is theirs to choose.
@@ -29,10 +33,16 @@ public partial class ColonyManager : Node
     // How much food upkeep currently costs the colony per in-game hour, for the food tooltip.
     public int UpkeepPerHour => Ants * FoodPerAntPerHour + LarvaCount * FoodPerLarvaPerHour;
 
+    // What upkeep actually costs once the farms have paid their share. Negative means the colony
+    // feeds itself and then some, which is the point of building farms.
+    public int NetFoodPerHour => FoodPerHourFarmed - UpkeepPerHour;
+
     // Lifetime average food income, for the food tooltip's "generating per minute" figure.
     public double FoodPerMinute => GameClock.ElapsedSeconds > 0 ? totalFoodEarned / GameClock.ElapsedSeconds * 60.0 : 0.0;
 
     private int nurseryCellTotal;
+    private int fungusCellTotal;
+    private int royalCellTotal;
     private int totalFoodEarned;
     private int starvingIntervalStreak;
 
@@ -53,6 +63,7 @@ public partial class ColonyManager : Node
     {
         GD.Print("Colony Manager started!");
 
+        GameClock.HourElapsed += HarvestFarms;
         GameClock.HourElapsed += ConsumeUpkeep;
     }
 
@@ -214,12 +225,81 @@ public partial class ColonyManager : Node
         NoteCeilings();
     }
 
-    // Every nursery cell (across any number of nursery rooms) chips away at hatch/maturity time, with diminishing returns.
+    // Every nursery cell (across any number of nursery rooms) chips away at hatch/maturity time,
+    // with diminishing returns. A negative count takes cells back off, which is what demolishing
+    // one does.
     public void AddNursery(int cellCount)
     {
-        nurseryCellTotal += cellCount;
-        HatchSpeedMultiplier = Mathf.Pow(0.95f, nurseryCellTotal);
+        nurseryCellTotal = Mathf.Max(0, nurseryCellTotal + cellCount);
+        Recompute();
+    }
+
+
+    // Population capacity given back when a chamber is pulled down.
+    //
+    // The colony is allowed to end up over capacity. Clamping it would mean killing ants to balance
+    // a building decision, which is not a trade the player asked for - instead laying simply stops
+    // until the population comes back under the ceiling on its own.
+    public void DecreaseCapacity(int amount)
+    {
+        Capacity = Mathf.Max(1, Capacity - amount);
         EmitSignal(SignalName.ColonyChanged);
+
+        if (PopulationUsed > Capacity)
+        {
+            RaiseAlert($"Over capacity: {PopulationUsed} in a nest built for {Capacity}. No new eggs until that settles.");
+        }
+    }
+
+    // Storage given back when a granary is pulled down. Anything the colony can no longer hold is
+    // genuinely lost - it was in that granary.
+    public void DecreaseFoodCapacity(int amount)
+    {
+        FoodCapacity = Mathf.Max(10, FoodCapacity - amount);
+
+        if (Food > FoodCapacity)
+        {
+            int spilled = Food - FoodCapacity;
+            Food = FoodCapacity;
+
+            RaiseAlert($"{spilled} food spoiled with nowhere left to keep it.");
+        }
+
+        EmitSignal(SignalName.ColonyChanged);
+    }
+
+    public void AddFungusFarm(int cellCount)
+    {
+        fungusCellTotal = Mathf.Max(0, fungusCellTotal + cellCount);
+        EmitSignal(SignalName.ColonyChanged);
+    }
+
+    public void AddRoyalChamber(int cellCount)
+    {
+        royalCellTotal = Mathf.Max(0, royalCellTotal + cellCount);
+        Recompute();
+    }
+
+    // Both multipliers compound per cell rather than adding.
+    //
+    // Adding would let a big enough nursery reach zero hatch time and a big enough royal chamber
+    // reach infinite laying. Compounding gives diminishing returns for free and can never reach
+    // either wall, so a room is always worth something and never worth everything.
+    private void Recompute()
+    {
+        HatchSpeedMultiplier = Mathf.Pow(1f - BuildingDefs.All[BuildingType.Nursery].EffectPerCell, nurseryCellTotal);
+        LaySpeedMultiplier = Mathf.Pow(1f + BuildingDefs.All[BuildingType.RoyalChamber].EffectPerCell, royalCellTotal);
+
+        EmitSignal(SignalName.ColonyChanged);
+    }
+
+    // The colony eats what it grew before it eats what it stored.
+    private void HarvestFarms()
+    {
+        if (fungusCellTotal > 0)
+        {
+            AddFood(fungusCellTotal);
+        }
     }
 
     public ColonySave CaptureState()
@@ -233,6 +313,8 @@ public partial class ColonyManager : Node
             Larvae = LarvaCount,
             Capacity = Capacity,
             NurseryCellTotal = nurseryCellTotal,
+            FungusCellTotal = fungusCellTotal,
+            RoyalCellTotal = royalCellTotal,
             TotalFoodEarned = totalFoodEarned,
             StarvingIntervalStreak = starvingIntervalStreak,
             LayingEnabled = LayingEnabled,
@@ -248,10 +330,12 @@ public partial class ColonyManager : Node
         LarvaCount = save.Larvae;
         Capacity = save.Capacity;
         nurseryCellTotal = save.NurseryCellTotal;
+        fungusCellTotal = save.FungusCellTotal;
+        royalCellTotal = save.RoyalCellTotal;
         totalFoodEarned = save.TotalFoodEarned;
         starvingIntervalStreak = save.StarvingIntervalStreak;
         LayingEnabled = save.LayingEnabled;
-        HatchSpeedMultiplier = Mathf.Pow(0.95f, nurseryCellTotal);
+        Recompute();
 
         EmitSignal(SignalName.ColonyChanged);
     }

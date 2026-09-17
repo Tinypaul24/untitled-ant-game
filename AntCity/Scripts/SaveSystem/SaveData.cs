@@ -69,6 +69,8 @@ public class ColonySave
     public int Larvae { get; set; }
     public int Capacity { get; set; }
     public int NurseryCellTotal { get; set; }
+    public int FungusCellTotal { get; set; }
+    public int RoyalCellTotal { get; set; }
     public int TotalFoodEarned { get; set; }
     public int StarvingIntervalStreak { get; set; }
     public bool LayingEnabled { get; set; }

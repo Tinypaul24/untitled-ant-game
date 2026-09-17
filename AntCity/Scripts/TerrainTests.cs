@@ -853,6 +853,58 @@ public partial class TerrainTests : Node
         Check(placed.State == Room.RoomState.Active, "furnishing activates the room");
         Check(colony.Capacity > capacityBefore, "an activated nesting chamber raises the population cap",
             $"{capacityBefore} -> {colony.Capacity}");
+
+        // A room only owns cells it can actually use, and only draws and charges for those. Asserted
+        // against the cell set rather than the count, because the count is what used to be right
+        // while the drawing was still painting the whole bounding box.
+        bool ownsOnlyUsable = true;
+
+        foreach (Vector2I cell in placed.OwnedCells)
+        {
+            if (grid.GetTileAt(cell) == GridManager.TileType.Rock)
+            {
+                ownsOnlyUsable = false;
+            }
+        }
+
+        Check(ownsOnlyUsable, "a room owns no cell that is solid rock");
+        Check(placed.Contains(placed.StandCell), "the cell a furnisher is sent to belongs to the room");
+
+        RoomsCanBePulledDownAgain(build, colony, placed, capacityBefore);
+    }
+
+    // A misplaced room used to be permanent: no way to select it, no way to remove it, and its food
+    // gone for good. Pulling one down has to give back what it is fair to give back and, crucially,
+    // take its effect off again - a demolished chamber that kept raising the population cap would be
+    // free capacity for the price of one room.
+    private void RoomsCanBePulledDownAgain(BuildManager build, ColonyManager colony, Room room, int capacityBefore)
+    {
+        BuildingDef def = BuildingDefs.All[room.Type];
+        int cells = room.CellCount;
+        int expectedRefund = Mathf.FloorToInt(def.FoodCostPerCell * cells * 0.5f);
+
+        // Room for the refund to land in, or AddFood clamps it at the ceiling and the assertion
+        // below measures the larder rather than the refund.
+        colony.RemoveFood(Mathf.Min(colony.Food, expectedRefund + 10));
+
+        int foodBefore = colony.Food;
+        Vector2I inside = room.StandCell;
+
+        build.SelectRoom(room);
+        Check(build.Selected == room, "a placed room can be selected");
+        Check(build.RoomAt(inside) == room, "clicking a cell finds the room that owns it");
+
+        build.Demolish(room);
+
+        Check(build.Selected == null, "pulling a room down clears the selection");
+        Check(build.RoomAt(inside) == null, "a demolished room no longer owns its cells");
+        Check(colony.Capacity == capacityBefore, "demolishing gives back the capacity it granted",
+            $"{capacityBefore} -> {colony.Capacity}");
+        Check(colony.Food == foodBefore + expectedRefund, "demolishing refunds half the food",
+            $"expected {foodBefore + expectedRefund}, got {colony.Food}");
+
+        // The ground stays dug. Only the room is gone.
+        Check(grid.IsTunnel(inside), "a demolished room leaves its cavity behind");
     }
 
     // Routes are simplified before an ant walks them: waypoints she does not have to turn at get

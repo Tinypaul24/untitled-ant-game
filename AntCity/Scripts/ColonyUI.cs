@@ -28,6 +28,13 @@ public partial class ColonyUI : CanvasLayer
     private Button nestingChamberButton;
     private Button granaryButton;
     private Button nurseryButton;
+    private Button fungusFarmButton;
+    private Button royalChamberButton;
+
+    private Control roomPanel;
+    private Label roomTitle;
+    private Label roomDetail;
+    private Button demolishButton;
 
     private PanelContainer toastPanel;
     private Label toastLabel;
@@ -64,6 +71,13 @@ public partial class ColonyUI : CanvasLayer
         nestingChamberButton = GetNode<Button>("ThemeRoot/BuildTray/NestingChamberButton");
         granaryButton = GetNode<Button>("ThemeRoot/BuildTray/GranaryButton");
         nurseryButton = GetNode<Button>("ThemeRoot/BuildTray/NurseryButton");
+        fungusFarmButton = GetNode<Button>("ThemeRoot/BuildTray/FungusFarmButton");
+        royalChamberButton = GetNode<Button>("ThemeRoot/BuildTray/RoyalChamberButton");
+
+        roomPanel = GetNode<Control>("ThemeRoot/RoomPanel");
+        roomTitle = GetNode<Label>("ThemeRoot/RoomPanel/RoomBox/RoomTitle");
+        roomDetail = GetNode<Label>("ThemeRoot/RoomPanel/RoomBox/RoomDetail");
+        demolishButton = GetNode<Button>("ThemeRoot/RoomPanel/RoomBox/DemolishButton");
 
         toastPanel = GetNode<PanelContainer>("ThemeRoot/ToastPanel");
         toastLabel = GetNode<Label>("ThemeRoot/ToastPanel/ToastLabel");
@@ -94,10 +108,17 @@ public partial class ColonyUI : CanvasLayer
         nestingChamberButton.Pressed += () => buildManager.BeginPlacement(BuildingType.NestingChamber);
         granaryButton.Pressed += () => buildManager.BeginPlacement(BuildingType.Granary);
         nurseryButton.Pressed += () => buildManager.BeginPlacement(BuildingType.Nursery);
+        fungusFarmButton.Pressed += () => buildManager.BeginPlacement(BuildingType.FungusFarm);
+        royalChamberButton.Pressed += () => buildManager.BeginPlacement(BuildingType.RoyalChamber);
 
         SetBuildingButtonLabel(nestingChamberButton, BuildingType.NestingChamber);
         SetBuildingButtonLabel(granaryButton, BuildingType.Granary);
         SetBuildingButtonLabel(nurseryButton, BuildingType.Nursery);
+        SetBuildingButtonLabel(fungusFarmButton, BuildingType.FungusFarm);
+        SetBuildingButtonLabel(royalChamberButton, BuildingType.RoyalChamber);
+
+        buildManager.RoomSelected += ShowRoom;
+        demolishButton.Pressed += () => buildManager.Demolish(buildManager.Selected);
 
         // Set the initial values.
         UpdateUI();
@@ -120,7 +141,8 @@ public partial class ColonyUI : CanvasLayer
         foodBlock.TooltipText =
             "Food feeds every ant and larva each in-game hour, and pays the cost of laying eggs and building rooms.\n\n" +
             $"Generating: {colonyManager.FoodPerMinute:0.0} food/min (average)\n" +
-            $"Upkeep: {colonyManager.UpkeepPerHour} food/hour ({colonyManager.Ants} ants, {colonyManager.LarvaCount} larvae)";
+            $"Upkeep: {colonyManager.UpkeepPerHour} food/hour ({colonyManager.Ants} ants, {colonyManager.LarvaCount} larvae)\n" +
+            $"Farmed: {colonyManager.FoodPerHourFarmed} food/hour, net {colonyManager.NetFoodPerHour:+#;-#;0}/hour";
 
         eggLabel.Text = $"🥚 Eggs: {colonyManager.Egg}";
 
@@ -176,6 +198,60 @@ public partial class ColonyUI : CanvasLayer
     {
         BuildingDef def = BuildingDefs.All[type];
         button.Text = $"{def.Name} ({def.FoodCostPerCell}/cell)";
-        button.TooltipText = $"{def.Description}\n\nCost: {def.FoodCostPerCell} food per cell.";
+
+        // The effect, not just the price. A tooltip that states what a room costs and not what it
+        // does leaves the player choosing between rooms on price alone, which is the one piece of
+        // information that cannot tell them which room they need.
+        button.TooltipText =
+            $"{def.Description}\n\n" +
+            $"Effect: {def.EffectSummary}\n" +
+            $"Cost: {def.FoodCostPerCell} food per cell";
+    }
+
+    // The room inspector. Shows what the selected room is, how far along it is, and what it is
+    // doing for the colony - and lets the player take it back down again.
+    private void ShowRoom(Room room)
+    {
+        roomPanel.Visible = room != null;
+
+        if (room == null)
+        {
+            return;
+        }
+
+        BuildingDef def = BuildingDefs.All[room.Type];
+        int cells = room.CellCount;
+
+        roomTitle.Text = $"{def.Name}  {cells} cell{(cells == 1 ? "" : "s")}";
+
+        string progress = room.State switch
+        {
+            Room.RoomState.Excavating => $"Being dug - {room.DugFraction * 100f:0}% ({room.PendingDigCells.Count} cells to go)",
+            Room.RoomState.Furnishing => "Dug out, waiting on a worker to furnish it",
+            _ => $"Working: {EffectOf(room.Type, cells)}",
+        };
+
+        roomDetail.Text = $"{progress}\n{def.EffectSummary}";
+        roomDetail.TooltipText = def.Description;
+
+        int refund = Mathf.FloorToInt(def.FoodCostPerCell * cells * 0.5f);
+        demolishButton.Text = $"Pull down (+{refund})";
+    }
+
+    // What this particular room contributes, in whole numbers the player can check against the bars.
+    private static string EffectOf(BuildingType type, int cells)
+    {
+        BuildingDef def = BuildingDefs.All[type];
+        int whole = Mathf.RoundToInt(def.EffectPerCell * cells);
+
+        return type switch
+        {
+            BuildingType.NestingChamber => $"+{whole} population capacity",
+            BuildingType.Granary => $"+{whole} food storage",
+            BuildingType.FungusFarm => $"+{whole} food per hour",
+            BuildingType.Nursery => $"{(1f - Mathf.Pow(1f - def.EffectPerCell, cells)) * 100f:0}% faster hatching",
+            BuildingType.RoyalChamber => $"{(Mathf.Pow(1f + def.EffectPerCell, cells) - 1f) * 100f:0}% faster laying",
+            _ => def.EffectSummary,
+        };
     }
 }

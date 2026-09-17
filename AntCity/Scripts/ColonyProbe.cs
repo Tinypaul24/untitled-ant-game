@@ -99,6 +99,44 @@ public partial class ColonyProbe : Node
 
             GD.Print("  [player] switched laying on");
         }
+
+        // A second room, of a kind that feeds the colony rather than housing it. Worth driving
+        // because a Fungus Farm is the only room whose effect arrives on the hour rather than at
+        // the moment it is built, so nothing else would exercise that path.
+        if (step == 3 && elapsed > 120)
+        {
+            step = 4;
+            OrderFarmDug();
+
+            GD.Print($"  [player] ordered a fungus farm dug at {FarmTopLeft()}");
+        }
+
+        if (step == 4 && elapsed > 180)
+        {
+            step = 5;
+
+            var footprint = new Rect2I(FarmTopLeft(), new Vector2I(ChamberWide, ChamberTall));
+
+            build.TryCreateRoom(footprint, BuildingType.FungusFarm);
+
+            GD.Print($"  [player] placed a fungus farm over {footprint}  (food {colony.Food})");
+        }
+    }
+
+    private Vector2I FarmTopLeft() => grid.NestCenterCell + new Vector2I(4, 8);
+
+    private void OrderFarmDug()
+    {
+        Vector2I topLeft = FarmTopLeft();
+        int issued = 0;
+
+        foreach (Node child in main.GetChildren())
+        {
+            if (child is AntWorker worker)
+            {
+                worker.CommandDig(topLeft + new Vector2I(issued++ % ChamberWide, ChamberTall - 1));
+            }
+        }
     }
 
     private const int ChamberWide = 4;
@@ -165,7 +203,7 @@ public partial class ColonyProbe : Node
         GD.Print($"t={elapsed:F0}s  ants={ants}/{colony.Capacity}  food={colony.Food}/{colony.FoodCapacity}  " +
                  $"rooms=[{rooms.Trim()}]  " +
                  $"eggs={colony.Egg} larvae={colony.LarvaCount}  upkeep/hr={colony.UpkeepPerHour}  " +
-                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  trail={pheromones.MarkedCells}  [{breakdown.Trim()}]");
+                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  trail={pheromones.MarkedCells}  farmed={colony.FoodPerHourFarmed}/hr  [{breakdown.Trim()}]");
     }
 
     // Open ground near the colony, as a proxy for "has anything been excavated".

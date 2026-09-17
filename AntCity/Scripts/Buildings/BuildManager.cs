@@ -223,6 +223,15 @@ public partial class BuildManager : Node2D
                 ColonyManager.AddNursery(cellCount);
                 ColonyManager.RaiseAlert($"{def.Name} built! Hatching sped up.");
                 break;
+            case BuildingType.FungusFarm:
+                int yield = Mathf.RoundToInt(effect);
+                ColonyManager.AddFungusFarm(cellCount);
+                ColonyManager.RaiseAlert($"{def.Name} built! +{yield} food an hour, grown at home.");
+                break;
+            case BuildingType.RoyalChamber:
+                ColonyManager.AddRoyalChamber(cellCount);
+                ColonyManager.RaiseAlert($"{def.Name} built! The Queen lays {(ColonyManager.LaySpeedMultiplier - 1f) * 100f:0}% faster.");
+                break;
         }
     }
 
@@ -286,7 +295,7 @@ public partial class BuildManager : Node2D
             // Recomputed rather than saved. A restored room owns whatever of its outline is open or
             // diggable now, which is the same answer as when it was placed unless something blasted
             // the rock out since - and if it did, the room may as well have the space.
-            int owned = 0;
+            var owned = new List<Vector2I>();
 
             ForEachCell(room.Footprint, cell =>
             {
@@ -296,10 +305,10 @@ public partial class BuildManager : Node2D
                 }
 
                 roomsByCell[cell] = room;
-                owned++;
+                owned.Add(cell);
             });
 
-            room.CellCount = owned;
+            room.SetOwnedCells(owned);
         }
     }
 
@@ -307,6 +316,16 @@ public partial class BuildManager : Node2D
     {
         if (!IsPlacing)
         {
+            // Unhandled, so an ant under the cursor has already taken the click - selecting a
+            // worker standing in a chamber should select the worker, which is the thing the player
+            // was aiming at.
+            if (@event is InputEventMouseButton click &&
+                click.Pressed &&
+                click.ButtonIndex == MouseButton.Left)
+            {
+                SelectRoom(RoomAt(GridManager.WorldToCell(GetGlobalMousePosition())));
+            }
+
             return;
         }
 
@@ -419,7 +438,7 @@ public partial class BuildManager : Node2D
         Room room = RoomScene.Instantiate<Room>();
         room.Type = type;
         room.Footprint = footprint;
-        room.CellCount = roomCells.Count;
+        room.SetOwnedCells(roomCells);
         room.Initialize(GridManager.CellSize, pendingCells);
         GetParent().AddChild(room);
         rooms.Add(room);
@@ -427,6 +446,132 @@ public partial class BuildManager : Node2D
         foreach (Vector2I cell in roomCells)
         {
             roomsByCell[cell] = room;
+        }
+
+        // Placement is finished, so stop placing.
+        //
+        // pendingType used to survive a successful placement, which meant the next click anywhere
+        // on the map started another room of the same kind. The player had no way to tell they were
+        // still armed, and the only way out was a right-click they had no reason to try.
+        if (forced == null)
+        {
+            CancelPlacement();
+        }
+    }
+
+    // ---- selecting, inspecting and pulling down --------------------------------------------------
+    //
+    // A room used to be permanent the instant it was placed. It could not be selected, inspected or
+    // removed, and its food was not refundable - so a misplaced chamber was a scar on the colony for
+    // the rest of the game, and the only response to a mistake was to live with it.
+
+    // Fraction of the food cost handed back when a room is pulled down. Not all of it: the ants
+    // really did dig that ground, and a free undo makes placement a decision with no weight.
+    private const float DemolishRefundFraction = 0.5f;
+
+    public Room Selected { get; private set; }
+
+    [Signal]
+    public delegate void RoomSelectedEventHandler(Room room);
+
+    public Room RoomAt(Vector2I cell)
+    {
+        return roomsByCell.TryGetValue(cell, out Room room) ? room : null;
+    }
+
+    public void SelectRoom(Room room)
+    {
+        if (Selected == room)
+        {
+            return;
+        }
+
+        if (Selected != null)
+        {
+            Selected.IsSelected = false;
+        }
+
+        Selected = room;
+
+        if (Selected != null)
+        {
+            Selected.IsSelected = true;
+        }
+
+        EmitSignal(SignalName.RoomSelected, room);
+    }
+
+    public void ClearSelection()
+    {
+        SelectRoom(null);
+    }
+
+    // Pulls a room down, gives back what it is fair to give back, and takes its effect away again.
+    public void Demolish(Room room)
+    {
+        if (room == null || !rooms.Contains(room))
+        {
+            return;
+        }
+
+        BuildingDef def = BuildingDefs.All[room.Type];
+        int cells = room.CellCount;
+
+        if (room.State == Room.RoomState.Active)
+        {
+            UndoEffect(room.Type, cells);
+        }
+
+        int refund = Mathf.FloorToInt(def.FoodCostPerCell * cells * DemolishRefundFraction);
+
+        if (refund > 0)
+        {
+            ColonyManager.AddFood(refund);
+        }
+
+        // Anything still owed to the job board goes with it, or workers keep turning up to dig a
+        // chamber that no longer exists.
+        foreach (Vector2I cell in room.OwnedCells)
+        {
+            claimedDigCells.Remove(cell);
+            roomsByCell.Remove(cell);
+        }
+
+        if (Selected == room)
+        {
+            SelectRoom(null);
+        }
+
+        rooms.Remove(room);
+        room.GetParent()?.RemoveChild(room);
+        room.QueueFree();
+
+        ColonyManager.RaiseAlert($"{def.Name} pulled down. {refund} food recovered.");
+    }
+
+    // The cavity stays dug. Only what the room *did* is taken back.
+    private void UndoEffect(BuildingType type, int cells)
+    {
+        BuildingDef def = BuildingDefs.All[type];
+        int effect = Mathf.RoundToInt(def.EffectPerCell * cells);
+
+        switch (type)
+        {
+            case BuildingType.NestingChamber:
+                ColonyManager.DecreaseCapacity(effect);
+                break;
+            case BuildingType.Granary:
+                ColonyManager.DecreaseFoodCapacity(effect);
+                break;
+            case BuildingType.Nursery:
+                ColonyManager.AddNursery(-cells);
+                break;
+            case BuildingType.FungusFarm:
+                ColonyManager.AddFungusFarm(-cells);
+                break;
+            case BuildingType.RoyalChamber:
+                ColonyManager.AddRoyalChamber(-cells);
+                break;
         }
     }
 
