@@ -46,8 +46,52 @@ public partial class ShotHarness : Node
         if (frames == 490)
         {
             Save("founded.png");
+            return;
+        }
+
+        // A plain corridor, cut on purpose and photographed close up.
+        //
+        // The queen's burrow is a shaft and a chamber in terrain that already has rock and slopes in
+        // it, which is a poor subject for the one question this answers: what shape does a bore
+        // leave? Six times zoom because at three a four-pixel ceiling is two screen pixels and you
+        // cannot honestly say either way.
+        if (frames == 500)
+        {
+            CutCorridor();
+
+            camera.Zoom = new Vector2(6f, 6f);
+            camera.Position = grid.CellToWorld(CorridorStart + new Vector2I(4, 0));
+            return;
+        }
+
+        if (frames == 520)
+        {
+            Save("bore.png");
 
             GetTree().Quit();
+        }
+    }
+
+    private Vector2I CorridorStart => grid.NestCenterCell + new Vector2I(14, 6);
+
+    // A straight run, a two-tile chamber off it and a diagonal step down, which between them cover
+    // every case the bore has to get right: a ceiling kept, a ceiling removed because the tile above
+    // was opened too, and two cavities meeting at a corner.
+    private void CutCorridor()
+    {
+        for (int x = 0; x < 9; x++)
+        {
+            grid.Dig(CorridorStart + new Vector2I(x, 0));
+        }
+
+        for (int x = 2; x < 5; x++)
+        {
+            grid.Dig(CorridorStart + new Vector2I(x, -1));
+        }
+
+        for (int step = 1; step <= 3; step++)
+        {
+            grid.Dig(CorridorStart + new Vector2I(8 + step, step));
         }
     }
 

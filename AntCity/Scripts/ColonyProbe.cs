@@ -163,7 +163,7 @@ public partial class ColonyProbe : Node
         GD.Print($"t={elapsed:F0}s  ants={ants}/{colony.Capacity}  food={colony.Food}/{colony.FoodCapacity}  " +
                  $"rooms=[{rooms.Trim()}]  " +
                  $"eggs={colony.Egg} larvae={colony.LarvaCount}  upkeep/hr={colony.UpkeepPerHour}  " +
-                 $"dug={CountTunnels() - startingTunnels}  [{breakdown.Trim()}]");
+                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  [{breakdown.Trim()}]");
     }
 
     // Open ground near the colony, as a proxy for "has anything been excavated".

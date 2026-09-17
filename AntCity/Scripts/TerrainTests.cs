@@ -35,6 +35,7 @@ public partial class TerrainTests : Node
         ChippingEatsAWholeTile();
         GrassBurnsAndStaysOnTheSurface();
         DiggingLeavesCleanTunnels();
+        BoredTunnelsLeaveNothingHanging();
         NestWallsCementThemselves();
         RoomsCanBePlacedAndFinished();
         SmoothedRoutesStayWalkable();
@@ -345,6 +346,32 @@ public partial class TerrainTests : Node
         return wanted;
     }
 
+    // A diggable tile with solid earth over it, including diagonally - the condition under which a
+    // bore keeps its ceiling.
+    private Vector2I FindBuriedDiggableNear(Vector2I wanted)
+    {
+        for (int radius = 0; radius < 8; radius++)
+        {
+            for (int dy = -radius; dy <= radius; dy++)
+            {
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    Vector2I candidate = wanted + new Vector2I(dx, dy);
+
+                    if (grid.CanDig(candidate) &&
+                        grid.CanDig(candidate + new Vector2I(-1, -1)) &&
+                        grid.CanDig(candidate + new Vector2I(0, -1)) &&
+                        grid.CanDig(candidate + new Vector2I(1, -1)))
+                    {
+                        return candidate;
+                    }
+                }
+            }
+        }
+
+        return wanted;
+    }
+
     private bool IsWalkableRoute(List<Vector2I> route)
     {
         for (int i = 1; i < route.Count; i++)
@@ -482,19 +509,28 @@ public partial class TerrainTests : Node
 
         materials.DeriveDirtyTiles();
 
-        int after = CountSolidCells(tile);
+        // The channel, not the whole tile. A bored tunnel deliberately keeps a lip of earth
+        // overhead so the corridor is the size of the ant rather than the size of the tile - what
+        // has to be empty is the part she walks through.
+        int channelLeft = CountSolidCells(tile, MaterialWorld.MaxCeilingCellRows);
+        int wholeTile = CountSolidCells(tile, 0);
 
         Check(before > 0, "the tile started out solid", $"{before} solid cells");
-        Check(after == 0, "chipping clears every cell of the tile", $"{after} cells left");
+        Check(channelLeft == 0, "chipping clears the whole channel", $"{channelLeft} cells left");
+        Check(
+            wholeTile <= MaterialWorld.MaxCeilingCellRows * MaterialWorld.CellsPerTileAxis,
+            "chipping leaves nothing but the ceiling",
+            $"{wholeTile} cells left");
+        Check(grid.IsTunnel(tile), "a fully chipped tile reads as open ground");
         Check(guard <= GridManager.GrainsPerCell * 4, "the tile opened in a sane number of grains");
     }
 
-    private int CountSolidCells(Vector2I tile)
+    private int CountSolidCells(Vector2I tile, int fromRow = 0)
     {
         Vector2I origin = MaterialWorld.TileToCellOrigin(tile);
         int solid = 0;
 
-        for (int y = 0; y < MaterialWorld.CellsPerTileAxis; y++)
+        for (int y = fromRow; y < MaterialWorld.CellsPerTileAxis; y++)
         {
             for (int x = 0; x < MaterialWorld.CellsPerTileAxis; x++)
             {
@@ -552,12 +588,12 @@ public partial class TerrainTests : Node
         materials.DeriveDirtyTiles();
     }
 
-    private int CountCellsIn(Vector2I tile, MaterialId want)
+    private int CountCellsIn(Vector2I tile, MaterialId want, int fromRow = 0)
     {
         Vector2I origin = MaterialWorld.TileToCellOrigin(tile);
         int found = 0;
 
-        for (int y = 0; y < MaterialWorld.CellsPerTileAxis; y++)
+        for (int y = fromRow; y < MaterialWorld.CellsPerTileAxis; y++)
         {
             for (int x = 0; x < MaterialWorld.CellsPerTileAxis; x++)
             {
@@ -607,12 +643,15 @@ public partial class TerrainTests : Node
 
         // A dug tunnel comes out empty. Nothing should be left lying in it - no loose grains, no
         // scattered blocks of soil that slumped in and settled on the floor.
+        //
+        // Measured over the channel only. The lip of earth a bore leaves overhead is the tunnel's
+        // ceiling, not litter in it.
         int litter = 0;
 
         for (int x = 0; x < 8; x++)
         {
-            litter += CountCellsIn(floor + new Vector2I(x, 0), MaterialId.Dirt)
-                + CountCellsIn(floor + new Vector2I(x, 0), MaterialId.LooseDirt);
+            litter += CountCellsIn(floor + new Vector2I(x, 0), MaterialId.Dirt, MaterialWorld.MaxCeilingCellRows)
+                + CountCellsIn(floor + new Vector2I(x, 0), MaterialId.LooseDirt, MaterialWorld.MaxCeilingCellRows);
         }
 
         Check(litter == 0, "a dug tunnel is left empty",
@@ -633,6 +672,64 @@ public partial class TerrainTests : Node
         Check(walkable >= 6, "a dug corridor is still walkable once the soil settles",
             $"{walkable} of 8 tiles standable");
 
+    }
+
+    // A bored tunnel keeps a lip of earth overhead so the channel is the size of an ant. This is
+    // the failure that design most easily produces, and one the player has already been shown once:
+    // dig the tile above and the lip has nothing left to hang from, so it reads as a block of soil
+    // floating in mid-cavity.
+    private void BoredTunnelsLeaveNothingHanging()
+    {
+        Vector2I floor = FindDiggableNear(grid.NestCenterCell + new Vector2I(-60, 10));
+
+        // Lower row first, then the row above it - the order that turns a ceiling into a slab.
+        for (int x = 0; x < 4; x++)
+        {
+            grid.Dig(floor + new Vector2I(x, 0));
+        }
+
+        for (int x = 0; x < 4; x++)
+        {
+            grid.Dig(floor + new Vector2I(x, -1));
+        }
+
+        materials.DeriveDirtyTiles();
+
+        int hanging = 0;
+
+        for (int x = 0; x < 4; x++)
+        {
+            Vector2I tile = floor + new Vector2I(x, 0);
+
+            hanging += CountSolidCells(tile) - CountSolidCells(tile, MaterialWorld.MaxCeilingCellRows);
+        }
+
+        Check(hanging == 0, "nothing is left hanging under an opened tile", $"{hanging} cells");
+
+        // The other half of the bargain: a corridor with solid ground over it keeps its ceiling and
+        // still has to read as open ground, or the tile derives back to earth and the dig loops.
+        //
+        // Genuinely buried, rather than assumed to be. The surface is noise, so "fourteen tiles
+        // below the nest" is open sky at some values of x - which is how this first failed.
+        Vector2I lone = FindBuriedDiggableNear(grid.NestCenterCell + new Vector2I(70, 14));
+
+        if (!grid.CanDig(lone))
+        {
+            Check(false, "a buried tile could be found to bore");
+            return;
+        }
+
+        grid.Dig(lone);
+        materials.DeriveDirtyTiles();
+
+        int kept = CountSolidCells(lone) - CountSolidCells(lone, MaterialWorld.MaxCeilingCellRows);
+
+        Check(grid.IsTunnel(lone), "a bored tile reads as open ground");
+        Check(
+            CountSolidCells(lone, MaterialWorld.MaxCeilingCellRows) == 0,
+            "a bored tile's channel is empty",
+            $"{CountSolidCells(lone, MaterialWorld.MaxCeilingCellRows)} cells in the way");
+        Check(kept > 0, "a bored tile under solid ground keeps a ceiling", $"{kept} cells kept");
     }
 
     // Ants cement the walls they live behind. Slow on purpose, so this runs the clock rather than

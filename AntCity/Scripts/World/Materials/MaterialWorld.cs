@@ -871,6 +871,20 @@ public partial class MaterialWorld : Node2D
     }
 
 
+    // How much earth a bored tunnel keeps overhead, in cells. Two rows is four world pixels.
+    //
+    // A dug tile used to be emptied completely, so every corridor was a clean sixteen-pixel box.
+    // The ant walking it is twelve pixels tall, which left her rattling around in a crate. An ant
+    // tunnel in the ground is dug to the size of the ant - that is the whole reason it is a tunnel
+    // and not a cave - so a bored tile now keeps its lip and the channel comes out twelve pixels,
+    // the height of the animal that cut it.
+    //
+    // Two rows is also comfortably inside the derivation threshold: a bored tile keeps 16 of its
+    // 64 cells against a SolidCellsForSolidTile of 32, so it always reads back as open ground.
+    // The deepest a lip ever gets, in cells - six world pixels. Bounds the channel, so this is what
+    // has to be cleared to take a ceiling off completely, and what a test has to measure below.
+    public const int MaxCeilingCellRows = 3;
+
     // Digging simply removes the earth. Nothing is shaken loose around the hole.
     //
     // It used to jar the surrounding soil into loose grains that slumped into the new tunnel. With
@@ -879,22 +893,184 @@ public partial class MaterialWorld : Node2D
     // as the digging being broken rather than as physics.
     private void OnTileDug(Vector2I tile)
     {
-        ClearTile(tile);
+        BoreTile(tile);
+
+        // A lip is only ever the underside of the earth above it. Dig that earth out too and the
+        // lip has nothing left to hang from - it becomes a slab floating in the middle of the
+        // cavity, which is precisely the "small squares in the tunnel" this game has had before.
+        // So opening a tile also takes the ceiling off anything already open beneath it.
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            OpenCeiling(tile + new Vector2I(dx, 1));
+        }
+    }
+
+    // Cuts the channel an ant walks down: the full width of the tile, floor to ceiling.
+    private void BoreTile(Vector2I tile)
+    {
+        Vector2I origin = TileToCellOrigin(tile);
+
+        for (int x = 0; x < CellsPerTileAxis; x++)
+        {
+            int top = CeilingDepthAt(tile, x);
+
+            LayCeiling(origin, x, top);
+
+            for (int y = top; y < CellsPerTileAxis; y++)
+            {
+                SetCell(origin + new Vector2I(x, y), MaterialId.Air);
+            }
+        }
+    }
+
+    // How much earth this one column of the tile keeps overhead.
+    //
+    // Ragged on purpose. A lip of constant depth just lowers the lid: the corridor is still a
+    // flat-topped box, only a shorter one, and it still repeats exactly every sixteen pixels. The
+    // depth is hashed on the world column rather than the column within the tile, so the roughness
+    // runs continuously along a corridor instead of restarting at every tile boundary - which is
+    // the difference between a tunnel and a row of identical crates.
+    private int CeilingDepthAt(Vector2I tile, int column)
+    {
+        if (!KeepsCeiling(tile))
+        {
+            return 0;
+        }
+
+        return 1 + (int)(ColumnNoise(tile.X * CellsPerTileAxis + column) % 3);
+    }
+
+    private static uint ColumnNoise(int worldColumn)
+    {
+        uint hash = (uint)worldColumn * 2654435761u;
+
+        hash ^= hash >> 15;
+        hash *= 2246822519u;
+        hash ^= hash >> 13;
+
+        return hash;
+    }
+
+    // The lip has to be written, not merely left alone.
+    //
+    // A chunk is materialised on first write and fills itself from the tile grid - and GridManager
+    // flips the tile to Tunnel *before* it announces the dig, so on untouched ground "clear
+    // everything except the top two rows" clears everything and then finds two rows of air. The
+    // ceiling only survived on tiles whose chunk already existed, which is nearly none of them.
+    //
+    // Cells that already hold something are left as they are: a tile chipped grain by grain had its
+    // chunk materialised while it was still solid, and whatever is up there - cemented wall, stone -
+    // is the real ceiling and better than anything this could invent.
+    private void LayCeiling(Vector2I origin, int column, int rows)
+    {
+        // Made of whatever it hangs from, so a roof under rock is rock and a roof under a wall the
+        // ants have cemented keeps the cement. Turf is the one substitution: the underside of grass
+        // is soil, and a green ceiling underground would be nonsense.
+        MaterialId above = GetCell(origin + new Vector2I(column, -1));
+        MaterialId roof = above == MaterialId.Stone || above == MaterialId.HardenedDirt
+            ? above
+            : MaterialId.Dirt;
+
+        for (int y = 0; y < rows; y++)
+        {
+            Vector2I cell = origin + new Vector2I(column, y);
+
+            if (MaterialDatabase.Get(GetCell(cell)).IsAir)
+            {
+                SetCell(cell, roof);
+            }
+        }
+    }
+
+    // Takes the lip off a tile that is already open.
+    //
+    // Only earth is removed. Sand that has slumped in and water that has run in belong to the
+    // simulation now, and clearing them here would quietly destroy matter every time a neighbour
+    // was dug - a corridor could be drained by excavating next to it.
+    private void OpenCeiling(Vector2I tile)
+    {
+        if (!IsOpenGround(tile))
+        {
+            return;
+        }
+
+        Vector2I origin = TileToCellOrigin(tile);
+
+        for (int y = 0; y < MaxCeilingCellRows; y++)
+        {
+            for (int x = 0; x < CellsPerTileAxis; x++)
+            {
+                Vector2I cell = origin + new Vector2I(x, y);
+
+                if (MaterialDatabase.Get(GetCell(cell)).Kind == MaterialKind.Solid)
+                {
+                    SetCell(cell, MaterialId.Air);
+                }
+            }
+        }
+    }
+
+    // No lip where there is nothing above to hang it from.
+    //
+    // Diagonals count, and that is the load-bearing part: a dig route is a staircase of tiles that
+    // meet at a corner, so on a diagonal step the only join between two cavities is that single
+    // corner. Leave the lip in and the corridor is stopped by a few pixels of earth at every step
+    // of the staircase - open ground the ant is routed through and cannot be seen to pass.
+    private bool KeepsCeiling(Vector2I tile)
+    {
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            if (IsOpenGround(tile + new Vector2I(dx, -1)))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool IsOpenGround(Vector2I tile)
+    {
+        GridManager.TileType type = Grid.GetTileAt(tile);
+
+        return type == GridManager.TileType.Tunnel || type == GridManager.TileType.Air;
     }
 
     private void OnTileChipped(Vector2I tile, int removed, int total)
     {
+        // Confined to the channel the finished bore will cut, so a tile part-way through being dug
+        // erodes towards the shape it is going to end up as. Spread over the whole tile instead and
+        // the ceiling would be chewed away first and then laid back down by the bore - a roof that
+        // visibly grows back as the digging finishes.
+        System.Span<int> tops = stackalloc int[CellsPerTileAxis];
+        int channel = 0;
+
+        for (int x = 0; x < CellsPerTileAxis; x++)
+        {
+            tops[x] = CeilingDepthAt(tile, x);
+            channel += CellsPerTileAxis - tops[x];
+        }
+
         // Only materialise a chunk once a tile is genuinely being worked; a glancing first chip on
         // untouched ground is not worth paying for.
-        int cellsToClear = Mathf.Min(CellsPerTile, removed * CellsPerTile / Mathf.Max(1, total));
+        int cellsToClear = Mathf.Min(channel, removed * channel / Mathf.Max(1, total));
 
         Vector2I origin = TileToCellOrigin(tile);
+        int cleared = 0;
 
-        for (int i = 0; i < cellsToClear; i++)
+        for (int i = 0; i < ChipOrder.Length && cleared < cellsToClear; i++)
         {
             int slot = ChipOrder[i];
+            int x = slot % CellsPerTileAxis;
+            int y = slot / CellsPerTileAxis;
 
-            SetCell(origin + new Vector2I(slot % CellsPerTileAxis, slot / CellsPerTileAxis), MaterialId.Air);
+            if (y < tops[x])
+            {
+                continue;
+            }
+
+            SetCell(origin + new Vector2I(x, y), MaterialId.Air);
+            cleared++;
         }
     }
 

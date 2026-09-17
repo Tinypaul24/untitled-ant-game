@@ -18,7 +18,23 @@ public partial class AntWorker : Area2D
     // check has a fixed frame deadline she has to clear. Changing walking speed to fix a sprite
     // scale would be a balance change smuggled in behind an art change.
     private const float MoveSpeed = 24f;
+    // Gravity does not negotiate. A worker dropping into a shaft she has just undermined covers it
+    // far faster than she walks - at walking pace a three-tile drop is a four-second glide.
+    private const float FallSpeed = 96f;
     private const float ArrivalDistance = 2f;
+
+    // Steering. An ant reaches full speed in a fifth of a second, which is quick enough that
+    // setting off still feels immediate and slow enough that you can see her lean into it.
+    private const float Acceleration = 120f;
+    // Radians per second. About 1.4 turns a second: a right-angle corner takes ~0.17s, which at
+    // walking speed is an arc roughly four pixels across - visible as a curve, not as a swerve.
+    private const float TurnRate = 9f;
+    // Fleeing lava is not the moment to be graceful.
+    private const float PanicTurnRate = 20f;
+    // Past this much of a turn she nearly stops and pivots instead of arcing. Real ants turn on
+    // the spot, and it is also what stops a bounded turn rate becoming an orbit she never escapes.
+    private const float PivotSpeedFraction = 0.2f;
+    private static readonly float SharpTurnRadians = Mathf.DegToRad(70f);
     // Seconds to excavate one whole cell, split evenly across the grains it is made of.
     private const float DigSeconds = 2f;
     private const float DigSecondsPerGrain = DigSeconds / GridManager.GrainsPerCell;
@@ -70,6 +86,17 @@ public partial class AntWorker : Area2D
     private Vector2 wanderHome;
     private Vector2 moveTarget;
     private Vector2 facing = Vector2.Down;
+
+    // Where she is actually going and how fast, as opposed to where the path says she should be.
+    private Vector2 velocity;
+    private Vector2 heading = Vector2.Right;
+    // The straight line from where this leg began to its waypoint. Kept so she can tell "reached
+    // it" from "went past it", which distance alone cannot answer once she travels in arcs.
+    private Vector2 legDirection;
+    private double legTimer;
+    private double legDeadline;
+    private bool falling;
+
     private Queue<Vector2I> pendingPath = new Queue<Vector2I>();
     private Action onPathComplete;
     private Vector2I digTarget;
@@ -150,19 +177,91 @@ public partial class AntWorker : Area2D
             return;
         }
 
-        Vector2 direction = moveTarget - Position;
-        float distance = direction.Length();
+        Steer(delta);
+    }
 
-        if (distance <= ArrivalDistance)
+    // Walking, with momentum.
+    //
+    // This used to be: point straight at the next cell centre, translate at a constant speed, and
+    // teleport the last two pixels on arrival. Direction was recomputed from nothing every frame,
+    // so a corner was a corner - an instantaneous ninety-degree change of heading, every sixteen
+    // pixels, for the whole length of a corridor.
+    private void Steer(double delta)
+    {
+        Vector2 toTarget = moveTarget - Position;
+        float distance = toTarget.Length();
+
+        if (distance <= ArrivalDistance || HasPassed(toTarget))
         {
-            Position = moveTarget;
             AdvancePath();
             return;
         }
 
-        Vector2 step = direction.Normalized() * MoveSpeed * (float)delta;
-        Position += step.Length() > distance ? direction : step;
-        UpdateFacing(direction);
+        Vector2 wanted = toTarget / distance;
+
+        // Fast enough to still stop on the waypoint, rather than a flat speed plus an arrival
+        // snap. This is what makes her settle onto a target instead of overshooting it. The cap is
+        // only reached on long legs; a single-tile hop never gets there, which is why a corridor
+        // now reads as one accelerating run rather than sixteen identical steps.
+        float cap = falling ? FallSpeed : MoveSpeed;
+        float targetSpeed = Mathf.Min(cap, Mathf.Sqrt(2f * Acceleration * distance));
+
+        // Turn at a bounded rate, so corners are arcs.
+        float maxTurn = (escaping ? PanicTurnRate : TurnRate) * (float)delta;
+        float turn = Mathf.Clamp(heading.AngleTo(wanted), -maxTurn, maxTurn);
+
+        heading = heading.Rotated(turn).Normalized();
+
+        // Anti-orbit, and the reason arrival is reliable at a finite turn rate: an ant who cannot
+        // turn tightly enough to hit her target slows to nearly a pivot rather than circling it.
+        // Real ants turn on the spot, so this reads correctly as well as behaving correctly - you
+        // cannot orbit a point you are barely translating toward.
+        if (Mathf.Abs(heading.AngleTo(wanted)) > SharpTurnRadians)
+        {
+            targetSpeed *= PivotSpeedFraction;
+        }
+
+        float speed = Mathf.MoveToward(velocity.Length(), targetSpeed, Acceleration * (float)delta);
+        velocity = heading * speed;
+
+        Position += velocity * (float)delta;
+        UpdateFacing(heading);
+
+        WatchForStall(delta);
+    }
+
+    // Whether she has gone past the waypoint rather than reaching it. Distance alone is not enough
+    // with a bounded turn rate: an ant on a wide arc can sail past just outside the arrival radius
+    // and then chase a point behind her forever.
+    private bool HasPassed(Vector2 toTarget)
+    {
+        return legDirection != Vector2.Zero && toTarget.Dot(legDirection) <= 0f;
+    }
+
+    // How many times the stall watchdog below has had to rescue an ant. Counted rather than
+    // silently swallowed: a safety net that catches people every day is not a safety net, it is a
+    // hole in the floor. ColonyProbe prints this, and it should read zero.
+    public static int StallRescues { get; private set; }
+
+    // Last resort. Stranding is a one-way failure in this game, so an ant must never be able to
+    // stall permanently on a steering bug - if a leg takes far longer than it possibly should, put
+    // her on the waypoint and move on. This is the old teleport, kept as an emergency floor rather
+    // than as the mechanism.
+    private void WatchForStall(double delta)
+    {
+        legTimer += delta;
+
+        if (legTimer < legDeadline)
+        {
+            return;
+        }
+
+        StallRescues++;
+
+        Position = moveTarget;
+        velocity = Vector2.Zero;
+
+        AdvancePath();
     }
 
     // Route through existing tunnels to whichever tunnel cell is nearest the target, then dig a corridor the rest of the way.
@@ -254,6 +353,14 @@ public partial class AntWorker : Area2D
         moveTarget = Position;
         wanderHome = Position;
 
+        // A loaded ant starts from rest. Velocity is not saved - it is a tenth of a second of
+        // state, not something a player would notice restored, and carrying a stale one over would
+        // have her set off in whatever direction she happened to be walking before the save.
+        velocity = Vector2.Zero;
+        legDirection = Vector2.Zero;
+        falling = false;
+        escaping = false;
+
         AbandonCurrentJob();
         StopCurrentTask();
         wanderTimer.Stop();
@@ -300,7 +407,7 @@ public partial class AntWorker : Area2D
 
         if (isSelected)
         {
-            DrawArc(Vector2.Zero, SelectionRingRadius, 0f, Mathf.Tau, 24, SelectionRingColor, 2f, true);
+            DrawArc(BodyOffset, SelectionRingRadius, 0f, Mathf.Tau, 24, SelectionRingColor, 2f, true);
         }
     }
 
@@ -479,6 +586,7 @@ public partial class AntWorker : Area2D
             return false;
         }
 
+        falling = true;
         FollowPath(new List<Vector2I> { floor }, GoIdle);
 
         return true;
@@ -499,8 +607,22 @@ public partial class AntWorker : Area2D
 
     private void FollowPath(List<Vector2I> cells, Action onComplete)
     {
+        BeginRoute(cells, onComplete, fleeing: false);
+    }
+
+    // The one way a route starts.
+    //
+    // Fleeing used to set up its first waypoint by hand, duplicating the tail of AdvancePath, and
+    // the escaping flag was raised in AdvancePath itself - for every route, not just an escape. So
+    // any walking ant counted as fleeing, and neither the periodic danger check nor the
+    // step-into-hazard check ran while she was on her way anywhere. Danger was only ever noticed by
+    // an ant standing still.
+    private void BeginRoute(List<Vector2I> cells, Action onComplete, bool fleeing)
+    {
         pendingPath = new Queue<Vector2I>(cells);
         onPathComplete = onComplete;
+        escaping = fleeing;
+
         AdvancePath();
     }
 
@@ -510,6 +632,12 @@ public partial class AntWorker : Area2D
         {
             state = State.Idle;
             escaping = false;
+            falling = false;
+
+            // She has arrived, so she is standing still - not drifting off the far side of her
+            // destination while a dig timer runs.
+            velocity = Vector2.Zero;
+            legDirection = Vector2.Zero;
 
             Action callback = onPathComplete;
             onPathComplete = null;
@@ -535,9 +663,33 @@ public partial class AntWorker : Area2D
             return;
         }
 
-        escaping = true;
         moveTarget = gridManager.CellToWorld(pendingPath.Dequeue());
         state = State.Walking;
+
+        StartLeg();
+    }
+
+    // Book-keeping for one waypoint: which way it lies, and how long it may take.
+    private void StartLeg()
+    {
+        Vector2 leg = moveTarget - Position;
+        float length = leg.Length();
+
+        legDirection = length > 0.001f ? leg / length : Vector2.Zero;
+        legTimer = 0;
+
+        // Three times as long as the leg could possibly need, plus a second of slack for turning
+        // into it. Deliberately generous: this is a safety net, and a watchdog that fired during
+        // ordinary walking would just be the old teleport wearing a hat.
+        legDeadline = length / MoveSpeed * 3.0 + 1.0;
+
+        // Starting from a standstill she is allowed to simply be facing the right way - an ant
+        // pivots on the spot in a fraction of a second, and arcing out of stationary looks like a
+        // car pulling away. Mid-route she keeps her heading and turns into the corner instead.
+        if (velocity == Vector2.Zero && legDirection != Vector2.Zero)
+        {
+            heading = legDirection;
+        }
     }
 
     // Drops whatever she was doing and walks to the nearest safe footing.
@@ -564,23 +716,25 @@ public partial class AntWorker : Area2D
         plannedDigRoute.Clear();
         onPathComplete = null;
 
-        List<Vector2I> escape = gridManager.FindTunnelPath(here, refuge);
+        // Whatever momentum she had was carrying her somewhere that no longer matters, and it is
+        // the one moment she should visibly stop dead before bolting.
+        velocity = Vector2.Zero;
+        falling = false;
 
         // A path may not exist: FindTunnelPath refuses to route through danger, and she is standing
         // in it. The refuge is adjacent in that case, so step straight at it - hesitating inside a
         // flow to look for a prettier route is worse than the route.
-        pendingPath = escape != null
-            ? new Queue<Vector2I>(escape)
-            : new Queue<Vector2I>(new[] { refuge });
+        List<Vector2I> escape = gridManager.FindTunnelPath(here, refuge)
+            ?? new List<Vector2I> { refuge };
 
-        onPathComplete = () =>
-        {
-            wanderHome = Position;
-            GoIdle();
-        };
-
-        moveTarget = gridManager.CellToWorld(pendingPath.Dequeue());
-        state = State.Walking;
+        BeginRoute(
+            escape,
+            () =>
+            {
+                wanderHome = Position;
+                GoIdle();
+            },
+            fleeing: true);
     }
 
     private void DigTowardTarget()
@@ -965,26 +1119,37 @@ public partial class AntWorker : Area2D
 
     private void UpdateFacing(Vector2 direction)
     {
-        // Greater-or-equal, not greater. Every ramp in the game is an exact 45 degrees, because
-        // MoveDirections only holds unit diagonals - so |dx| == |dy| exactly, the strict comparison
+        float alongX = Mathf.Abs(direction.X);
+        float alongY = Mathf.Abs(direction.Y);
+
+        // Sticky sideways, for two reasons that used to be one bug each.
+        //
+        // Ties go to horizontal: every ramp in the game is an exact 45 degrees, because
+        // MoveDirections only holds unit diagonals - so |dx| == |dy| exactly, a strict comparison
         // fell through to the vertical branch, and the ant rendered facing Up or Down while walking
         // sideways. She visibly slid down every slope in the colony.
-        bool horizontal = Mathf.Abs(direction.X) >= Mathf.Abs(direction.Y);
-
-        sprite.Texture = horizontal
-            ? (direction.X > 0 ? RightTexture : LeftTexture)
-            : (direction.Y > 0 ? DownTexture : UpTexture);
+        //
+        // And horizontal holds until clearly beaten, because heading is now a continuously turning
+        // vector rather than one of eight fixed directions. Around 45 degrees a bare comparison
+        // flips several times a second and the sprite strobes. Diagonal art is the real answer;
+        // until then she has to commit a quarter past the diagonal before the view of her changes.
+        bool wasHorizontal = facing.X != 0f;
+        bool horizontal = wasHorizontal ? alongY <= alongX * 1.25f : alongX >= alongY;
 
         Vector2 turned = horizontal
             ? new Vector2(Mathf.Sign(direction.X), 0f)
             : new Vector2(0f, Mathf.Sign(direction.Y));
 
-        if (turned == facing)
+        if (turned == facing || turned == Vector2.Zero)
         {
             return;
         }
 
         facing = turned;
+
+        sprite.Texture = horizontal
+            ? (direction.X > 0 ? RightTexture : LeftTexture)
+            : (direction.Y > 0 ? DownTexture : UpTexture);
 
         // Anything in her jaws has to swing round with her.
         if (carriedGrains.Count > 0)
