@@ -518,14 +518,17 @@ public partial class BuildManager : Node2D
 
     // Public so tests and probes can place a room without synthesising mouse input. This is the same
     // path the drag-to-place UI takes, so exercising it exercises the real thing.
-    public void TryCreateRoom(Rect2I footprint, BuildingType? forced = null)
+    //
+    // Reports whether the room went up. It used to return void, so a caller had no way to tell a
+    // refusal from a success except by hunting the scene tree for the room afterwards.
+    public bool TryCreateRoom(Rect2I footprint, BuildingType? forced = null)
     {
         if (!IsFootprintValid(footprint, out string reason))
         {
             // Said out loud. A placement that just quietly does nothing is indistinguishable from
             // the build system being broken, which is exactly how it read.
             ColonyManager.RaiseAlert(reason);
-            return;
+            return false;
         }
 
         BuildingType type = forced ?? pendingType.Value;
@@ -545,7 +548,7 @@ public partial class BuildManager : Node2D
         if (!ColonyManager.RemoveFood(def.FoodCostPerCell * roomCells.Count))
         {
             ColonyManager.RaiseAlert($"Not enough food - a {def.Name} that size costs {def.FoodCostPerCell * roomCells.Count}.");
-            return;
+            return false;
         }
 
         var pendingCells = new HashSet<Vector2I>();
@@ -580,6 +583,8 @@ public partial class BuildManager : Node2D
         {
             CancelPlacement();
         }
+
+        return true;
     }
 
     // ---- selecting, inspecting and pulling down --------------------------------------------------
@@ -721,18 +726,25 @@ public partial class BuildManager : Node2D
             return false;
         }
 
-        bool overlaps = false;
+        // Every chamber keeps a wall between itself and the next one.
+        //
+        // This replaces an overlap test that asked whether any footprint cell was in roomsByCell -
+        // which holds only the cells a room *owns*, so a new room could already be laid straight
+        // over an existing room's rock. Growing the footprint by one and intersecting footprints
+        // has no such hole, and it is what "at least one tile of earth between two rooms" means.
+        Room touching = NearestRoomWithin(footprint);
+
+        if (touching != null)
+        {
+            reason = $"Too close to the {BuildingDefs.All[touching.Type].Name} next door - chambers need a wall between them.";
+            return false;
+        }
+
         bool outOfBounds = false;
         int usable = 0;
 
         ForEachCell(footprint, cell =>
         {
-            if (roomsByCell.ContainsKey(cell))
-            {
-                overlaps = true;
-                return;
-            }
-
             if (!GridManager.IsInBounds(cell))
             {
                 outOfBounds = true;
@@ -744,12 +756,6 @@ public partial class BuildManager : Node2D
                 usable++;
             }
         });
-
-        if (overlaps)
-        {
-            reason = "That overlaps a room you have already placed.";
-            return false;
-        }
 
         if (outOfBounds)
         {
@@ -763,7 +769,66 @@ public partial class BuildManager : Node2D
             return false;
         }
 
+        // A chamber needs somewhere to stand.
+        //
+        // Nothing checked this, and the failure was silent rather than loud: open sky counts as a
+        // usable cell, so a room could be placed in mid-air, and CommandBuild's
+        // `FindTunnelPath(...) ?? new List<Vector2I> { startCell }` fallback then had the furnisher
+        // "build" it from wherever she happened to be standing.
+        if (FloorCells(footprint) == 0)
+        {
+            reason = "Nothing to stand on - the ground under all of that is open.";
+            return false;
+        }
+
         return true;
+    }
+
+    // An existing room within one tile of this footprint, if any. Deliberately compares footprints
+    // rather than owned cells, so rock a room happens not to own still counts as its territory.
+    private Room NearestRoomWithin(Rect2I footprint)
+    {
+        Rect2I grown = footprint.Grow(1);
+
+        foreach (Room room in rooms)
+        {
+            if (grown.Intersects(room.Footprint))
+            {
+                return room;
+            }
+        }
+
+        return null;
+    }
+
+    // How many cells of this chamber will have a floor once it is dug.
+    //
+    // Only the bottom row can have one: a cell is standable when the cell below is *not* walkable,
+    // and every cell below a higher row is itself part of the room and will be dug out.
+    //
+    // This started as "the whole row must be solid", which measurement killed immediately - the
+    // colony stopped building rooms entirely. Ants dig their way to a chamber along routes that
+    // descend past it and come back up, so the floor row of a room usually *is* breached in a cell
+    // or two by the time it is placed. Demanding an unbroken floor bans the normal case.
+    //
+    // One cell is the honest requirement, because it is what the rule is actually for: a chamber in
+    // open sky has nowhere to stand and nobody can furnish it, and that is the failure worth
+    // refusing. A chamber with a gap in its floor is just a chamber with a gap in its floor - ants
+    // fall through it and TryFall walks them back.
+    private int FloorCells(Rect2I footprint)
+    {
+        int below = footprint.Position.Y + footprint.Size.Y;
+        int floor = 0;
+
+        for (int x = footprint.Position.X; x < footprint.Position.X + footprint.Size.X; x++)
+        {
+            if (!GridManager.IsTunnel(new Vector2I(x, below)))
+            {
+                floor++;
+            }
+        }
+
+        return floor;
     }
 
     // Open ground, or ground an ant could open. Rock is neither, so it stays where it is.

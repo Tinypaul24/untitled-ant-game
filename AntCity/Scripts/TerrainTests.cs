@@ -41,6 +41,7 @@ public partial class TerrainTests : Node
         DiggingInTheSkyLeavesSky();
         NestWallsCementThemselves();
         RoomsCanBePlacedAndFinished();
+        RoomsNeedWallsAroundThem();
         SmoothedRoutesStayWalkable();
         RoutesDoNotBobUpAndDown();
         DugCorridorsStayWalkable();
@@ -987,6 +988,73 @@ public partial class TerrainTests : Node
         Check(placed.Contains(placed.StandCell), "the cell a furnisher is sent to belongs to the room");
 
         RoomsCanBePulledDownAgain(build, colony, placed, capacityBefore);
+    }
+
+    // Each chamber is a chamber, not part of an open-plan cavern.
+    //
+    // Nothing used to look outside a footprint at all, so two rooms could share an open edge and a
+    // room could be placed in mid-air. Both rules are checked through the same public entry point
+    // the drag-to-place UI uses, so passing here means the UI behaves the same way.
+    private void RoomsNeedWallsAroundThem()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+
+        colony.AddFood(400);
+
+        Vector2I origin = grid.NestCenterCell + new Vector2I(-90, 9);
+
+        // A floor first, so "no floor" cannot be the reason any of these are refused.
+        for (int x = -2; x < 14; x++)
+        {
+            materials.FillTile(origin + new Vector2I(x, 2), MaterialId.Stone);
+        }
+
+        materials.DeriveDirtyTiles();
+
+        Check(build.TryCreateRoom(new Rect2I(origin, new Vector2I(3, 2)), BuildingType.Granary),
+            "a room can be placed in virgin earth");
+
+        // Butted straight up against it: no wall at all between the two, which is the open-plan
+        // cavern this rule exists to prevent.
+        Check(!build.TryCreateRoom(new Rect2I(origin + new Vector2I(3, 0), new Vector2I(3, 2)), BuildingType.Granary),
+            "a room touching its neighbour is refused");
+
+        // One tile of earth between them is exactly the rule, so this one goes up.
+        Check(build.TryCreateRoom(new Rect2I(origin + new Vector2I(4, 0), new Vector2I(3, 2)), BuildingType.Granary),
+            "a room one tile clear of its neighbour is accepted");
+
+        // Diagonally touching counts too. Corners are part of the shell, and two chambers meeting
+        // at a point have no wall between them however you draw it.
+        Check(!build.TryCreateRoom(new Rect2I(origin + new Vector2I(-2, 2), new Vector2I(2, 2)), BuildingType.Granary),
+            "a room touching a neighbour at the corner is refused");
+
+        // And a chamber needs something underneath it.
+        Vector2I sky = new Vector2I(grid.NestCenterCell.X - 90, 3);
+
+        Check(!build.TryCreateRoom(new Rect2I(sky, new Vector2I(3, 2)), BuildingType.Granary),
+            "a room in open sky is refused");
+
+        // A hole in the floor, forced open rather than dug: generation puts rock wherever it likes,
+        // and a Dig that quietly refused would leave the floor intact and this testing nothing.
+        Vector2I hollow = grid.NestCenterCell + new Vector2I(-90, 14);
+        int floorRow = hollow.Y + 2;
+        int open = 0;
+
+        for (int x = 0; x < 3; x++)
+        {
+            grid.SetTileFromSimulation(new Vector2I(hollow.X + x, floorRow), GridManager.TileType.Tunnel);
+
+            if (grid.IsTunnel(new Vector2I(hollow.X + x, floorRow)))
+            {
+                open++;
+            }
+        }
+
+        Check(open == 3, "the floor under the test patch really is open", $"{open} of 3 cells open");
+
+        Check(!build.TryCreateRoom(new Rect2I(hollow, new Vector2I(3, 2)), BuildingType.Granary),
+            "a room with a hole in its floor is refused");
     }
 
     // A misplaced room used to be permanent: no way to select it, no way to remove it, and its food
