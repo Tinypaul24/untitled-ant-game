@@ -1343,6 +1343,13 @@ public partial class MaterialWorld : Node2D
                     break;
                 }
 
+                // Sky only. This is the guard that makes spoil in a corridor impossible rather than
+                // merely unlikely - every load in the game goes through here.
+                if (!Grid.IsSpoilTile(target))
+                {
+                    continue;
+                }
+
                 placed = EmitInto(target, 1, material) > 0;
             }
 

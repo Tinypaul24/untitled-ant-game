@@ -220,6 +220,33 @@ public partial class GridManager : Node2D
         return IsInBounds(cell) && IsWalkable(GetTile(cell));
     }
 
+    // Somewhere a load may be tipped.
+    //
+    // Spoil belongs on the surface, and this is the invariant that makes it so. Every load goes
+    // through it, so soil cannot end up in a corridor however the hauling code is rearranged - which
+    // is the failure that had this whole feature switched off, and it deserves to be impossible
+    // rather than merely avoided.
+    //
+    // Open sky, and not a tile somebody dug: a heap tipped into a dug-out sky tile would be an ant
+    // filling in the hole she had just climbed out of.
+    public bool IsSpoilTile(Vector2I tile)
+    {
+        return tile.Y >= 0
+            && tile.Y < SurfaceHeight - GrassDepth
+            && GetTile(tile) != TileType.Tunnel
+            && !IsEntranceApron(tile);
+    }
+
+    // The doorstep. Kept clear of spoil, because a hill grown over the nest mouth is a colony that
+    // has buried its own way in.
+    public bool IsEntranceApron(Vector2I tile)
+    {
+        return Mathf.Abs(tile.X - NestCenterCell.X) <= EntranceClearTiles;
+    }
+
+    // How wide the clear apron around the entrance is, in tiles.
+    private const int EntranceClearTiles = 3;
+
     // Fired when terrain changes at runtime, so overlays know to redraw.
     [Signal]
     public delegate void TerrainChangedEventHandler();

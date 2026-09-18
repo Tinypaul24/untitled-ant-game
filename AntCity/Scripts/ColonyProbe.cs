@@ -26,6 +26,13 @@ public partial class ColonyProbe : Node
     private double sinceReport;
     private int startingTunnels;
 
+    // Baselines. Generation leaves natural water pockets and turf underground, and ponds in the
+    // surface row already split it into segments that cannot reach each other - so the absolute
+    // counts are noise. What matters is whether the colony makes either number worse.
+    private int startingSpoilUnderground;
+    private int startingCutOff;
+    private bool baselined;
+
     public override void _Ready()
     {
         main = GetNode("Main");
@@ -52,6 +59,16 @@ public partial class ColonyProbe : Node
         if (!founding.Finished)
         {
             return;
+        }
+
+        // Baselined here rather than in _Ready, because in _Ready the world has not been generated
+        // yet - every count came back zero and the deltas then read as the whole world appearing.
+        if (!baselined)
+        {
+            baselined = true;
+            startingSpoilUnderground = SpoilUnderground();
+            startingCutOff = SurfaceCellsCutOff();
+            GD.Print($"baseline: spoil underground {startingSpoilUnderground}  surface reach {startingCutOff}");
         }
 
         PlayTheGame();
@@ -203,7 +220,86 @@ public partial class ColonyProbe : Node
         GD.Print($"t={elapsed:F0}s  ants={ants}/{colony.Capacity}  food={colony.Food}/{colony.FoodCapacity}  " +
                  $"rooms=[{rooms.Trim()}]  " +
                  $"eggs={colony.Egg} larvae={colony.LarvaCount}  upkeep/hr={colony.UpkeepPerHour}  " +
-                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  trail={pheromones.MarkedCells}  farmed={colony.FoodPerHourFarmed}/hr  [{breakdown.Trim()}]");
+                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  trail={pheromones.MarkedCells}  farmed={colony.FoodPerHourFarmed}/hr  mound={MoundTiles()}  spoilUnder={SpoilUnderground() - startingSpoilUnderground}  spoilLeft={AntWorker.SpoilLeftovers}  reach={SurfaceCellsCutOff()}/{startingCutOff}  [{breakdown.Trim()}]");
+    }
+
+    // Hauled spoil that has ended up underground, which must be zero.
+    //
+    // The whole point of the sky-only guard is that soil cannot get into a corridor, and this is what
+    // checks it rather than trusting it. Loose soil only, not every powder: generation leaves natural
+    // water pockets and buried turf down there in the hundreds, and counting those buried the signal
+    // completely - the number moved around on its own and said nothing about hauling.
+    private int SpoilUnderground()
+    {
+        int total = 0;
+        Vector2I nest = grid.NestCenterCell;
+
+        for (int y = grid.SurfaceHeight; y < grid.SurfaceHeight + 24; y++)
+        {
+            for (int x = nest.X - 20; x <= nest.X + 20; x++)
+            {
+                Vector2I origin = MaterialWorld.TileToCellOrigin(new Vector2I(x, y));
+
+                for (int cy = 0; cy < MaterialWorld.CellsPerTileAxis; cy++)
+                {
+                    for (int cx = 0; cx < MaterialWorld.CellsPerTileAxis; cx++)
+                    {
+                        if (materials.GetCell(origin + new Vector2I(cx, cy)) == MaterialId.LooseDirt)
+                        {
+                            total++;
+                        }
+                    }
+                }
+            }
+        }
+
+        return total;
+    }
+
+    // How much hill the colony has built: solid tiles standing above the original surface line.
+    private int MoundTiles()
+    {
+        int mound = 0;
+        Vector2I nest = grid.NestCenterCell;
+
+        for (int y = 0; y < grid.SurfaceHeight - grid.GrassDepth; y++)
+        {
+            for (int x = nest.X - 24; x <= nest.X + 24; x++)
+            {
+                if (!grid.IsTunnel(new Vector2I(x, y)))
+                {
+                    mound++;
+                }
+            }
+        }
+
+        return mound;
+    }
+
+    // The tripwire: how much of the foraging highway still reaches the nest.
+    //
+    // The turf row only, not every standable cell above the surface. A spoil heap has a standable
+    // top that nothing can climb onto, and counting those as "cut off" made the number climb
+    // steadily while the colony was in perfect health - it was measuring the hill, not the danger.
+    // What actually kills a colony is its own mound sealing the row its foragers walk along, and
+    // that is this number falling.
+    private int SurfaceCellsCutOff()
+    {
+        int reaching = 0;
+        Vector2I nest = grid.NestCenterCell;
+        int row = grid.SurfaceHeight - grid.GrassDepth;
+
+        for (int x = nest.X - 20; x <= nest.X + 20; x++)
+        {
+            Vector2I cell = new Vector2I(x, row);
+
+            if (grid.IsStandable(cell) && grid.FindTunnelPath(cell, nest) != null)
+            {
+                reaching++;
+            }
+        }
+
+        return reaching;
     }
 
     // Open ground near the colony, as a proxy for "has anything been excavated".

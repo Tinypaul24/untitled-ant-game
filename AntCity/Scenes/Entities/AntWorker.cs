@@ -1046,15 +1046,18 @@ public partial class AntWorker : Area2D
 
         bool cellOpened = gridManager.DigGrain(pendingDigCell);
 
-        // Loose soil only exists while the dirt simulation is switched on. With it off, a dig simply
-        // opens the cell and there is nothing to carry, so no hauling trips happen at all.
-        if (materialWorld.HaulingEnabled)
+        // Loose soil only exists while hauling is switched on. With it off, a dig simply opens the
+        // cell and there is nothing to carry, so no trips happen at all.
+        if (materialWorld.HaulingEnabled && !MaterialDatabase.Get(material).IsAir)
         {
-            // The scraped-out material tumbles onto the floor at her feet. Anything with nowhere to
-            // land (she is walled in, or the floor is already heaped up) goes onto her back instead.
-            int spilled = materialWorld.EmitInto(standingCell, GrainsPerDigTick, material);
-
-            for (int i = spilled; i < GrainsPerDigTick && carriedGrains.Count < HaulCapacityGrains; i++)
+            // All of it onto her back.
+            //
+            // It used to tumble onto the floor at her feet first, and only what would not fit there
+            // went into her jaws. That is where the permanent blocks of soil in every corridor came
+            // from: the spoil was Dirt, which is Solid and never falls, so it sat exactly where it
+            // was dropped and no amount of hauling could ever shift it. A digger carries what she
+            // digs.
+            for (int i = 0; i < GrainsPerDigTick && carriedGrains.Count < HaulCapacityGrains; i++)
             {
                 carriedGrains.Add(material);
             }
@@ -1080,9 +1083,8 @@ public partial class AntWorker : Area2D
         Action callback = pendingDigCallback;
         pendingDigCallback = null;
 
-        // Cell is through: scoop up the heap she has been piling at her feet, plus anything that
-        // tumbled into the new opening.
-        ScoopUpLooseGrains(standingCell);
+        // Cell is through: scoop up whatever slumped into the new opening. Nothing is piled at her
+        // feet any more, so there is no heap there to collect.
         ScoopUpLooseGrains(dugCell);
 
         // A full load gets hauled out immediately, mid-corridor, rather than waiting for the whole dig job to finish.
@@ -1136,12 +1138,30 @@ public partial class AntWorker : Area2D
             // Tip it out beside her, on the side away from the nest, so the heap builds outward
             // instead of burying the hauler or growing back across the way she came in.
             int awayFromNest = arrived.X < gridManager.NestCenterCell.X ? -1 : 1;
+            Vector2I onto = arrived + new Vector2I(awayFromNest, 0);
 
-            materialWorld.Release(arrived + new Vector2I(awayFromNest, 0), carriedGrains);
+            int leftover = materialWorld.Release(onto, carriedGrains);
+
+            // One more try, a tile further out, in case the column she picked is already full to
+            // the sky. Anything still in her jaws after that she simply keeps and carries on with -
+            // bounded, because the load has a cap and she stops collecting when it is reached, and
+            // it can never leave her standing still.
+            if (leftover > 0)
+            {
+                leftover = materialWorld.Release(onto + new Vector2I(awayFromNest * 2, 0), carriedGrains);
+            }
+
+            SpoilLeftovers += leftover;
+
             QueueRedraw();
             afterDump();
         });
     }
+
+    // Grains that found nowhere to go. Counted rather than shrugged off, on the same principle as
+    // StallRescues: a colony quietly failing to dispose of its own spoil should show up as a number
+    // somebody can read, not as a hill that mysteriously stops growing. It should be zero.
+    public static int SpoilLeftovers { get; private set; }
 
     // Re-enters whichever job was interrupted for a haul trip, by target rather than by raw callback,
     // since the ant is now standing at the dump and needs a fresh route back to the dig front.
