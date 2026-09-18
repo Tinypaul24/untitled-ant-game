@@ -326,18 +326,22 @@ text = "Pull down"
 
 [node name="ToastPanel" type="PanelContainer" parent="UI/ThemeRoot"]
 visible = false
-anchors_preset = 5
+anchors_preset = 7
 anchor_left = 0.5
+anchor_top = 1.0
 anchor_right = 0.5
-offset_left = -80.0
-offset_top = 26.0
-offset_right = 80.0
-offset_bottom = 42.0
+anchor_bottom = 1.0
+offset_left = -120.0
+offset_top = -78.0
+offset_right = 120.0
+offset_bottom = -60.0
 grow_horizontal = 2
+grow_vertical = 0
 
 [node name="ToastLabel" type="Label" parent="UI/ThemeRoot/ToastPanel"]
 layout_mode = 2
 horizontal_alignment = 1
+autowrap_mode = 2
 text = "Alert"
 
 [node name="ColonyManager" type="Node" parent="." unique_id=635932249 node_paths=PackedStringArray("GameClock")]

@@ -53,6 +53,15 @@ public partial class SaveManager : Node
             return;
         }
 
+        // Not while the pause menu is up. The menu only consumes Escape, so F9 fell straight through
+        // to here - and Restore ends by putting Engine.TimeScale back to the saved speed, which
+        // meant the colony ran at full speed behind a menu that was still open and still claiming to
+        // have paused it. Resolved lazily because Main adds this node before it adds the menu.
+        if (main.GetNodeOrNull<PauseMenu>("PauseMenu")?.IsOpen == true)
+        {
+            return;
+        }
+
         if (key.Keycode == Key.F5)
         {
             Save();
@@ -382,7 +391,10 @@ public partial class SaveManager : Node
         gameClock.RestoreState(data.Clock);
 
         camera.Position = new Vector2(data.Camera.X, data.Camera.Y);
-        camera.Zoom = new Vector2(data.Camera.Zoom, data.Camera.Zoom);
+
+        // Through the clamp, not straight onto the property: a save carrying a fractional zoom would
+        // otherwise reload at it.
+        (camera as CameraController)?.SetZoomLevel(data.Camera.Zoom);
 
         colonyUI.RestoreSpeed(data.TimeScale, data.Paused);
     }

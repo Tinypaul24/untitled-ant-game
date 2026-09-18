@@ -110,7 +110,7 @@ public partial class ColonyUI : CanvasLayer
         pauseButton.Toggled += OnPauseToggled;
 
         // Toggle the build tray, and start placement when a building is chosen.
-        buildButton.Pressed += () => buildTray.Visible = !buildTray.Visible;
+        buildButton.Pressed += ToggleBuildTray;
         nestingChamberButton.Pressed += () => buildManager.BeginPlacement(BuildingType.NestingChamber);
         granaryButton.Pressed += () => buildManager.BeginPlacement(BuildingType.Granary);
         nurseryButton.Pressed += () => buildManager.BeginPlacement(BuildingType.Nursery);
@@ -141,6 +141,23 @@ public partial class ColonyUI : CanvasLayer
         if (roomPanel.Visible && GodotObject.IsInstanceValid(buildManager.Selected))
         {
             ShowRoom(buildManager.Selected);
+        }
+    }
+
+
+    // Hiding the tray has to disarm the placement it started.
+    //
+    // It used to only flip the tray's visibility, so pendingType survived - and BuildManager marks
+    // every left click handled while it is placing. The player could no longer select an ant or a
+    // room, with nothing on screen to say why, and the only way out was a right-click they had no
+    // reason to try.
+    private void ToggleBuildTray()
+    {
+        buildTray.Visible = !buildTray.Visible;
+
+        if (!buildTray.Visible)
+        {
+            buildManager.CancelPlacement();
         }
     }
 
@@ -176,6 +193,12 @@ public partial class ColonyUI : CanvasLayer
         pauseButton.SetPressedNoSignal(paused);
         pauseButton.Text = paused ? "▶" : "⏸";
         Engine.TimeScale = paused ? 0f : speed;
+
+        // The buttons too. Loading a save taken at 3x ran the game at 3x with the HUD showing 1x lit.
+        speed1xButton.SetPressedNoSignal(Mathf.IsEqualApprox(speed, 1f));
+        speed2xButton.SetPressedNoSignal(Mathf.IsEqualApprox(speed, 2f));
+        speed3xButton.SetPressedNoSignal(Mathf.IsEqualApprox(speed, 3f));
+        speed4xButton.SetPressedNoSignal(Mathf.IsEqualApprox(speed, 4f));
     }
 
     private void SetSpeed(float scale)

@@ -31,8 +31,28 @@ public partial class CameraController : Camera2D
         panPosition = Position;
     }
 
+    // Real seconds since the last frame, not scaled ones.
+    //
+    // _Process delta is multiplied by Engine.TimeScale, so pausing froze keyboard panning entirely
+    // and you could not look around a paused colony. Middle-drag kept working because it is
+    // event-driven, which made it read as a broken keyboard rather than as a deliberate freeze.
+    // Looking around is something the player does, not something the colony does.
+    private ulong lastPanTicks;
+
+    private float RealDelta()
+    {
+        ulong now = Time.GetTicksUsec();
+        ulong since = lastPanTicks == 0 ? 0 : now - lastPanTicks;
+
+        lastPanTicks = now;
+
+        return Mathf.Min((float)(since / 1_000_000.0), 0.1f);
+    }
+
     public override void _Process(double delta)
     {
+        float realDelta = RealDelta();
+
         // Something else may have moved the camera - Main points it at the landing site on startup,
         // the minimap jumps it on a click, a save restores it. Take their word for it rather than
         // dragging the view back to wherever the accumulator had got to.
@@ -66,7 +86,7 @@ public partial class CameraController : Camera2D
         if (direction != Vector2.Zero)
         {
             // Divide by zoom so panning covers the same screen distance per second at any zoom level.
-            panPosition += direction.Normalized() * PanSpeed * (float)delta / Zoom.X;
+            panPosition += direction.Normalized() * PanSpeed * realDelta / Zoom.X;
         }
 
         // Snapped to whole world pixels. The project sets snap_2d_transforms_to_pixel, but that
@@ -120,9 +140,17 @@ public partial class CameraController : Camera2D
         }
     }
 
-    private void SetZoomClamped(int zoom)
+    // The one place zoom is set, so nothing can route around the whole-number rule.
+    //
+    // Loading a save used to write camera.Zoom straight from the file, which is how a colony could
+    // come back at 1.75x - exactly the sub-pixel resampling the integer rule exists to prevent, and
+    // it stayed that way until the next wheel tick snapped it.
+    public void SetZoomLevel(float zoom)
     {
-        int clamped = Mathf.Clamp(zoom, MinZoom, MaxZoom);
+        int clamped = Mathf.Clamp(Mathf.RoundToInt(zoom), MinZoom, MaxZoom);
+
         Zoom = new Vector2(clamped, clamped);
     }
+
+    private void SetZoomClamped(int zoom) => SetZoomLevel(zoom);
 }

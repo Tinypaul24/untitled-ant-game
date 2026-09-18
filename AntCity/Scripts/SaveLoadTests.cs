@@ -234,12 +234,17 @@ public partial class SaveLoadTests : Node
             $"{main.GetNode<Queen>("Queen").LayAccumulator}");
 
         main.GetNode<Queen>("Queen").Grounded = true;
+
     }
     private void ColonyComesBackAsItWas()
     {
         colony.AddFood(17);
         camera.Position = new Vector2(1234f, 567f);
-        camera.Zoom = new Vector2(1.75f, 1.75f);
+
+        // A legal zoom. This was 1.75, which round-tripped exactly and was asserted to - but the
+        // whole-number rule exists because a 12px ant drawn at a fraction of a pixel turns to mush,
+        // and loading a save was the one route that bypassed it.
+        camera.Zoom = new Vector2(3f, 3f);
 
         List<Vector2> antPositions = AntPositions();
         int food = colony.Food;
@@ -291,6 +296,16 @@ public partial class SaveLoadTests : Node
         Check(grid.CanDig(digTarget), "ground dug after saving is solid again");
         Check(camera.Position.DistanceTo(cameraPosition) < 0.01f, "the view comes back to the same spot");
         Check(Mathf.Abs(camera.Zoom.X - cameraZoom) < 0.001f, "the view comes back at the same zoom");
+
+        // And a save carrying an illegal one is snapped to the nearest legal zoom rather than
+        // restored as written.
+        var controller = camera as CameraController;
+        controller?.SetZoomLevel(1.75f);
+
+        Check(controller == null || Mathf.IsEqualApprox(camera.Zoom.X, 2f),
+            "a fractional zoom is snapped to a whole one", $"{camera.Zoom.X}");
+
+        controller?.SetZoomLevel(cameraZoom);
     }
 
     private void OrdersAndSelectionComeBack()
