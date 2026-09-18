@@ -337,6 +337,20 @@ public partial class MaterialWorld : Node2D
         nestSite = new Rect2I(nest - new Vector2I(HardenRadiusTiles, HardenRadiusTiles), new Vector2I(span, span));
 
         AddCementSite(nestSite.Value);
+
+        // The hill as well, which is the same behaviour pointed at the surface.
+        //
+        // TouchesAir plus the earth-only filter confine plastering to the skin, so what forms is a
+        // hard crust over a loose interior - which is what a real ant hill is, and it means digging
+        // into one later has to break through something. It also does structural work: hardened
+        // earth is Solid and not displaceable, so a cemented rim physically holds the cone back off
+        // the doorstep instead of letting it slump wherever gravity wants.
+        int skyRows = Grid.SurfaceHeight - Grid.GrassDepth;
+        int moundSpan = Grid.MoundSpanTiles * 2 + 1;
+
+        AddCementSite(new Rect2I(
+            new Vector2I(nest.X - Grid.MoundSpanTiles, 0),
+            new Vector2I(moundSpan, Mathf.Max(1, skyRows))));
     }
 
     private Rect2I? nestSite;

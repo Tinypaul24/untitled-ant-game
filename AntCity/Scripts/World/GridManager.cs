@@ -562,6 +562,10 @@ public partial class GridManager : Node2D
     private const int MoundInnerTiles = 5;
     private const int MoundOuterTiles = 9;
 
+    // How far either side of the entrance the hill can plausibly reach, for anything that needs to
+    // work over the whole of it. Wider than the drop band, because a tipped cone slumps outward.
+    public int MoundSpanTiles => MoundOuterTiles + 4;
+
     // Whether a load tipped from here would actually land anywhere.
     //
     // The drop-off search returns the best cell it can *reach*, and an ant sealed in a half-dug

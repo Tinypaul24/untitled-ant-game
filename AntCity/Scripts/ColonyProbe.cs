@@ -32,6 +32,7 @@ public partial class ColonyProbe : Node
     private int startingSpoilUnderground;
     private int startingCutOff;
     private bool baselined;
+    private int standableSurface;
 
     public override void _Ready()
     {
@@ -220,7 +221,7 @@ public partial class ColonyProbe : Node
         GD.Print($"t={elapsed:F0}s  ants={ants}/{colony.Capacity}  food={colony.Food}/{colony.FoodCapacity}  " +
                  $"rooms=[{rooms.Trim()}]  " +
                  $"eggs={colony.Egg} larvae={colony.LarvaCount}  upkeep/hr={colony.UpkeepPerHour}  " +
-                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  trail={pheromones.MarkedCells}  farmed={colony.FoodPerHourFarmed}/hr  mound={MoundTiles()}  spoilUnder={SpoilUnderground() - startingSpoilUnderground}  spoilLeft={AntWorker.SpoilLeftovers}  reach={SurfaceCellsCutOff()}/{startingCutOff}  nest={grid.GetTileAt(grid.NestCenterCell)}/{(grid.IsStandable(grid.NestCenterCell) ? "stand" : "BLOCKED")}  [{breakdown.Trim()}]");
+                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  trail={pheromones.MarkedCells}  farmed={colony.FoodPerHourFarmed}/hr  mound={MoundTiles()}  spoilUnder={SpoilUnderground() - startingSpoilUnderground}  spoilLeft={AntWorker.SpoilLeftovers}  reach={SurfaceCellsCutOff()}of{standableSurface}/{startingCutOff}  nest={grid.GetTileAt(grid.NestCenterCell)}/{(grid.IsStandable(grid.NestCenterCell) ? "stand" : "BLOCKED")}  [{breakdown.Trim()}]");
     }
 
     // Hauled spoil that has ended up underground, which must be zero.
@@ -286,6 +287,7 @@ public partial class ColonyProbe : Node
     private int SurfaceCellsCutOff()
     {
         int reaching = 0;
+        standableSurface = 0;
         Vector2I nest = grid.NestCenterCell;
         int row = grid.SurfaceHeight - grid.GrassDepth;
 
@@ -293,7 +295,14 @@ public partial class ColonyProbe : Node
         {
             Vector2I cell = new Vector2I(x, row);
 
-            if (grid.IsStandable(cell) && grid.FindTunnelPath(cell, nest) != null)
+            if (!grid.IsStandable(cell))
+            {
+                continue;
+            }
+
+            standableSurface++;
+
+            if (grid.FindTunnelPath(cell, nest) != null)
             {
                 reaching++;
             }
