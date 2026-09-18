@@ -1129,6 +1129,15 @@ public partial class AntWorker : Area2D
     {
         Vector2I current = gridManager.WorldToCell(Position);
         Vector2I dropOff = gridManager.FindSpoilDropOff(current);
+
+        // Nowhere to put it yet - see IsViableSpoilDropOff. Carry on working rather than walking to
+        // nothing and back.
+        if (!gridManager.IsViableSpoilDropOff(dropOff))
+        {
+            afterDump();
+            return;
+        }
+
         List<Vector2I> route = gridManager.FindTunnelPath(current, dropOff) ?? new List<Vector2I> { current };
 
         FollowPath(route, () =>

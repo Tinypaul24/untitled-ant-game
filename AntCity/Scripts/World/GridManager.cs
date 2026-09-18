@@ -244,6 +244,14 @@ public partial class GridManager : Node2D
         return Mathf.Abs(tile.X - NestCenterCell.X) <= EntranceClearTiles;
     }
 
+    // The doorstep proper: the apron at or above the turf line, which is the ground a forager has
+    // to cross to get in or out. Below that is the shaft, and a tile going solid down there is
+    // ordinary cave-in business rather than the colony being shut out of its own nest.
+    public bool IsDoorstep(Vector2I tile)
+    {
+        return IsEntranceApron(tile) && tile.Y <= SurfaceHeight - GrassDepth;
+    }
+
     // How wide the clear apron around the entrance is, in tiles.
     private const int EntranceClearTiles = 3;
 
@@ -359,7 +367,12 @@ public partial class GridManager : Node2D
         // A tunnel the colony dug that has just been filled in is a blockage, not scenery. Sand
         // sliding down the entrance ramp could otherwise seal the only way in or out with nothing
         // in the game able to respond to it.
-        if (previous == TileType.Tunnel && !IsWalkable(type))
+        //
+        // The doorstep counts whatever it was before. Spoil slumping off the hill onto the ground
+        // outside the nest mouth was never a tunnel, so the test above would ignore it - and a
+        // colony that has walled itself out of its own front door starves without anything
+        // noticing. Real ants keep their entrance clear; now so do these.
+        if (!IsWalkable(type) && (previous == TileType.Tunnel || IsDoorstep(cell)))
         {
             EmitSignal(SignalName.TileObstructed, cell);
         }
@@ -486,10 +499,9 @@ public partial class GridManager : Node2D
     public Vector2I FindSpoilDropOff(Vector2I from)
     {
         const int MaxVisited = 4000;
-        const int PreferredSpread = 6;
 
         Vector2I best = from;
-        int bestScore = SpoilDropScore(from, PreferredSpread);
+        int bestScore = SpoilDropScore(from);
 
         var visited = new HashSet<Vector2I> { from };
         var frontier = new Queue<Vector2I>();
@@ -511,7 +523,7 @@ public partial class GridManager : Node2D
                 visited.Add(next);
                 frontier.Enqueue(next);
 
-                int score = SpoilDropScore(next, PreferredSpread);
+                int score = SpoilDropScore(next);
 
                 if (score < bestScore)
                 {
@@ -524,16 +536,100 @@ public partial class GridManager : Node2D
         return best;
     }
 
-    // Lower is better. Getting out of the burrow is what matters, so every cell at or above the
-    // surface counts as equally good height-wise and the tie is broken by walking a few cells clear
-    // of the nest column - otherwise a hauler would trek across the map to reach one perch that
-    // happens to sit a single row higher.
-    private int SpoilDropScore(Vector2I cell, int preferredSpread)
+    // Lower is better. Getting out of the burrow is what matters most, so depth dominates and every
+    // cell at or above the surface ties; the tie is broken by how far the cell sits from the band
+    // the hill is meant to grow in.
+    //
+    // It used to *maximise* distance from the nest column, capped at six tiles, which spread every
+    // load as far out as a hauler could be bothered to walk. That is the right instinct for keeping
+    // a heap off the doorstep and the wrong one for building a hill: spoil scattered over twelve
+    // tiles is a mess, not a fortress. A band does both - every load joins one mound, and the mound
+    // starts far enough out that it never grows across the way in.
+    private int SpoilDropScore(Vector2I cell)
     {
-        int height = Mathf.Max(cell.Y, SurfaceHeight - 1);
-        int lateral = Mathf.Min(Mathf.Abs(cell.X - NestCenterCell.X), preferredSpread);
+        int depth = Mathf.Max(0, cell.Y - (SurfaceHeight - GrassDepth));
+        int lateral = Mathf.Abs(cell.X - NestCenterCell.X);
 
-        return height * 100 - lateral;
+        int offBand = lateral < MoundInnerTiles ? MoundInnerTiles - lateral
+            : lateral > MoundOuterTiles ? lateral - MoundOuterTiles
+            : 0;
+
+        return depth * 100 + offBand * 10;
+    }
+
+    // Where the hill is meant to stand: an annulus around the entrance column. Inside it is the
+    // apron the ants keep clear; outside it, a load would be walked further than it is worth.
+    private const int MoundInnerTiles = 5;
+    private const int MoundOuterTiles = 9;
+
+    // Whether a load tipped from here would actually land anywhere.
+    //
+    // The drop-off search returns the best cell it can *reach*, and an ant sealed in a half-dug
+    // chamber can reach nothing above ground - so it hands back somewhere eight tiles down. She
+    // then walks there, the sky-only guard quite correctly refuses to tip soil into a corridor, and
+    // she keeps the load; and because her load is full, she takes that same walk to nothing again
+    // on the very next dig tick. Measured, that was thirty-five thousand grains of shuttling in
+    // four minutes.
+    //
+    // Better to know before setting off. She keeps carrying and keeps working, and the trip becomes
+    // possible again the moment somebody digs the corridor that reaches daylight.
+    public bool IsViableSpoilDropOff(Vector2I cell)
+    {
+        if (cell.Y > SurfaceHeight - GrassDepth)
+        {
+            return false;
+        }
+
+        int awayFromNest = cell.X < NestCenterCell.X ? -1 : 1;
+
+        return !IsEntranceApron(cell + new Vector2I(awayFromNest, 0))
+            || !IsEntranceApron(cell + new Vector2I(awayFromNest * 2, 0));
+    }
+
+    // The nearest patch of standable surface, for anything that wants "somewhere out in the open"
+    // without caring where spoil goes.
+    //
+    // Split out from FindSpoilDropOff because four tests were borrowing that as a general route
+    // destination, two of them asserting how long the route was - so tuning where the colony tips
+    // its earth was quietly breaking pathfinding tests that have nothing to do with spoil.
+    // minTilesAway exists because the nest itself sits on the surface row, so "nearest standable
+    // surface" from the nest is the nest - and a caller after a route to walk gets one cell.
+    public Vector2I FindNearestSurfaceStanding(Vector2I from, int minTilesAway = 0)
+    {
+        const int MaxVisited = 4000;
+
+        int surfaceRow = SurfaceHeight - GrassDepth;
+
+        var visited = new HashSet<Vector2I> { from };
+        var frontier = new Queue<Vector2I>();
+        frontier.Enqueue(from);
+
+        while (frontier.Count > 0 && visited.Count < MaxVisited)
+        {
+            Vector2I current = frontier.Dequeue();
+
+            if (current.Y <= surfaceRow &&
+                Mathf.Abs(current.X - from.X) >= minTilesAway &&
+                IsSafelyStandable(current))
+            {
+                return current;
+            }
+
+            foreach (Vector2I direction in MoveDirections)
+            {
+                Vector2I next = current + direction;
+
+                if (visited.Contains(next) || !IsSafelyStandable(next))
+                {
+                    continue;
+                }
+
+                visited.Add(next);
+                frontier.Enqueue(next);
+            }
+        }
+
+        return from;
     }
 
 

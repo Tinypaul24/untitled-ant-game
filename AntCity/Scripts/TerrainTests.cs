@@ -250,7 +250,7 @@ public partial class TerrainTests : Node
 
             Check(!grid.CanDig(target), $"dig to {offset} opens its target");
             Check(grid.IsStandable(cursor), $"digger at {offset} ends on solid footing");
-            Check(grid.FindTunnelPath(cursor, grid.FindSpoilDropOff(cursor)) != null, $"digger at {offset} can get home");
+            Check(grid.FindTunnelPath(cursor, grid.FindNearestSurfaceStanding(cursor)) != null, $"digger at {offset} can get home");
         }
     }
 
@@ -449,7 +449,7 @@ public partial class TerrainTests : Node
         // route is already proven walkable by the first test - a hand-dug one has to satisfy the
         // no-climbing rules itself, and getting that subtly wrong tests the setup, not the hazard.
         Vector2I from = nest;
-        Vector2I to = grid.FindSpoilDropOff(nest);
+        Vector2I to = grid.FindNearestSurfaceStanding(nest, 8);
 
         // Expanded to the cells the route actually crosses. Routes are simplified down to their
         // corners now, so the returned list is no longer every cell she walks over - a mid-point
@@ -1271,10 +1271,33 @@ public partial class TerrainTests : Node
     // against it or slide up a wall. That is the thing this guards.
     private void SmoothedRoutesStayWalkable()
     {
-        Vector2I nest = grid.NestCenterCell;
-        Vector2I dropOff = grid.FindSpoilDropOff(nest);
+        // Its own corridor, cut for the purpose.
+        //
+        // This used to route from the nest to whatever the spoil drop-off happened to be, which
+        // coupled a pathfinding test to where the colony tips its earth - and to the twenty loads of
+        // sand an earlier test dumps on the surface and never clears up. It started failing with a
+        // one-cell route because the surface walkway near the nest had been buried by a test that
+        // has nothing to do with route smoothing.
+        Vector2I start = FindDiggableNear(grid.NestCenterCell + new Vector2I(-130, 11));
 
-        List<Vector2I> route = grid.FindTunnelPath(nest, dropOff);
+        for (int step = 0; step < 14; step++)
+        {
+            // A descending staircase, which is the shape simplification exists to collapse.
+            grid.Dig(start + new Vector2I(step, step / 3));
+        }
+
+        materials.DeriveDirtyTiles();
+
+        Vector2I finish = start + new Vector2I(13, 13 / 3);
+
+        if (!grid.IsStandable(start) || !grid.IsStandable(finish))
+        {
+            Check(false, "a corridor could be cut to route along",
+                $"{grid.IsStandable(start)} .. {grid.IsStandable(finish)}");
+            return;
+        }
+
+        List<Vector2I> route = grid.FindTunnelPath(start, finish);
 
         Check(route != null && route.Count >= 2, "there is a route to simplify", $"{route?.Count ?? 0} cells");
 
@@ -1283,7 +1306,7 @@ public partial class TerrainTests : Node
             return;
         }
 
-        Check(route[0] == nest && route[^1] == dropOff, "simplifying keeps both ends of the route",
+        Check(route[0] == start && route[^1] == finish, "simplifying keeps both ends of the route",
             $"{route[0]} .. {route[^1]}");
 
         int climbs = 0;
