@@ -174,6 +174,9 @@ public partial class AntWorker : Area2D
     private Vector2I lastTrailCell = new Vector2I(int.MinValue, int.MinValue);
     private bool followedTrail;
 
+    // A dead nestmate over her shoulder, on her way to the refuse heap.
+    private bool carryingBody;
+
     // True while she is walking a route out of danger, which is the one time she is allowed to head
     // into a hazardous cell on purpose.
     private bool escaping;
@@ -505,6 +508,10 @@ public partial class AntWorker : Area2D
     // A diagnostic read of the state machine in the same shape as DebugState, because this failure
     // is invisible in every harness: the probe counts what ants are doing, and a frozen ant reports
     // whatever she was doing when she froze.
+    // Whether losing her right now would also lose something the colony needs. Used to pick who
+    // starves: a forager walking food home is a worse loss than an ant wandering empty-handed.
+    public bool IsCarryingSomethingUseful => carriedFood > 0 || hasDigJob || pendingRoom != null;
+
     public bool IsStalled =>
         state != State.Walking
         && digTimer.IsStopped()
@@ -691,8 +698,7 @@ public partial class AntWorker : Area2D
 
         if (carriedFood > 0)
         {
-            colonyManager.AddFood(carriedFood);
-            carriedFood = 0;
+            ReturnCarriedFood();
         }
 
         // An interrupted haul tips its load out where it stands rather than deleting it - the
@@ -701,6 +707,13 @@ public partial class AntWorker : Area2D
 
         ReleaseForageTarget();
         hasDigJob = false;
+
+        // An interrupted funeral puts the body down where she stands rather than deleting it.
+        if (carryingBody)
+        {
+            carryingBody = false;
+            GetParent()?.AddChild(new AntCorpse { Name = "AntCorpse", Position = Position });
+        }
 
         // The wander timer too.
         //
@@ -738,6 +751,54 @@ public partial class AntWorker : Area2D
 
     // Look for open job-board work before falling back to aimless wandering.
 
+
+    // She has starved.
+    //
+    // One place, because every claim she is holding has to be let go and there is no second chance
+    // to do it. Nothing in this game used to free a worker at all - starvation decremented a counter
+    // and left her walking around - so every reference to her that outlives the tree is a new
+    // problem, and the selection list is the only one.
+    //
+    // RemoveChild before QueueFree, matching how rooms and the load path do it: QueueFree alone
+    // defers to the end of the frame, so an ant who dies in the same frame as a quicksave would be
+    // written into it.
+    public void Die()
+    {
+        AbandonCurrentJob();
+        StopCurrentTask();
+
+        wanderTimer.Stop();
+
+        // Whatever she was carrying falls where she lies. Release is sky-only on purpose, so using
+        // it here would delete the load of anyone who died underground - and matter conservation is
+        // checked to the cell.
+        if (carriedGrains.Count > 0)
+        {
+            materialWorld.Spill(gridManager.WorldToCell(Position), carriedGrains);
+        }
+
+        selectionManager.Forget(this);
+        colonyManager.RemoveAnt();
+
+        LeaveBody();
+
+        GetParent()?.RemoveChild(this);
+        QueueFree();
+    }
+
+    private void LeaveBody()
+    {
+        Node parent = GetParent();
+
+        if (parent == null)
+        {
+            return;
+        }
+
+        var corpse = new AntCorpse { Name = "AntCorpse", Position = Position };
+
+        parent.AddChild(corpse);
+    }
     // How many times an ant has had to be shaken out of doing nothing at all.
     //
     // Same principle as StallRescues: the normaliser in GoIdle fixes the paths we know about, and
@@ -822,6 +883,12 @@ public partial class AntWorker : Area2D
             return;
         }
 
+        // Bodies first. A corpse in a corridor is in the way, and carrying it out is quick.
+        if (TryRemoveCorpse())
+        {
+            return;
+        }
+
         // Food is the one thing the colony always needs, and nobody else is going to fetch it. An idle
         // worker goes looking rather than milling about, which is what lets the colony feed itself.
         if (gridManager.TryFindForageTarget(Position, ForageSightTiles * gridManager.CellSize, out Vector2I food))
@@ -865,6 +932,91 @@ public partial class AntWorker : Area2D
         }
     }
 
+
+    // Carrying the dead out of the nest.
+    //
+    // This is what real ants do with a corpse in normal times - necrophoresis - and the colony only
+    // eats them instead when the player says so. The body goes to the same place the spoil goes, so
+    // a midden grows on the side of the hill and becomes a record of every worker the colony lost.
+    private bool TryRemoveCorpse()
+    {
+        if (colonyManager.EatTheDeadPolicy || carryingBody)
+        {
+            return false;
+        }
+
+        if (!gridManager.TryFindCarrion(Position, ForageSightTiles * gridManager.CellSize, out Vector2I body))
+        {
+            return false;
+        }
+
+        Vector2I standAt = gridManager.FindNearestTunnelCell(body);
+        List<Vector2I> route = gridManager.FindTunnelPath(gridManager.WorldToCell(Position), standAt);
+
+        if (route == null)
+        {
+            return false;
+        }
+
+        forageTarget = body;
+        gridManager.ClaimForageCell(body);
+
+        FollowPath(route, PickUpBody);
+
+        return true;
+    }
+
+    private void PickUpBody()
+    {
+        if (!forageTarget.HasValue)
+        {
+            GoIdle();
+            return;
+        }
+
+        Vector2I body = forageTarget.Value;
+
+        // Somebody else may have got there first, or it may have rotted away while she walked.
+        if (!gridManager.IsCarrion(body))
+        {
+            ReleaseForageTarget();
+            GoIdle();
+            return;
+        }
+
+        gridManager.RemoveCarrion(body);
+        ReleaseForageTarget();
+
+        carryingBody = true;
+        QueueRedraw();
+
+        Vector2I here = gridManager.WorldToCell(Position);
+        Vector2I midden = gridManager.FindSpoilDropOff(here);
+        List<Vector2I> route = gridManager.FindTunnelPath(here, midden) ?? new List<Vector2I> { here };
+
+        FollowPath(route, DropBody);
+    }
+
+    private void DropBody()
+    {
+        if (!carryingBody)
+        {
+            GoIdle();
+            return;
+        }
+
+        carryingBody = false;
+        QueueRedraw();
+
+        // Laid down where she stands. A body already on the heap is refuse rather than a job, so it
+        // is registered as carrion again and simply nobody comes for it while the policy stands.
+        var corpse = new AntCorpse { Name = "AntCorpse", Position = Position };
+
+        GetParent()?.AddChild(corpse);
+
+        wanderHome = Position;
+        GoIdle();
+    }
     // Nothing in sight, so go and look where somebody else has been.
     //
     // She walks the trail outward and then simply goes idle again, which runs the short-range search
@@ -1433,10 +1585,28 @@ public partial class AntWorker : Area2D
         FollowPath(route, DepositFood);
     }
 
-    private void DepositFood()
+
+    // Hands her load to the colony, and says so when it does not all fit.
+    //
+    // AddFood clamps to the larder and returns what actually landed, and both callers used to throw
+    // that away - so a forager arriving at full stores silently deleted everything she was carrying,
+    // while a digger cutting through a seed cache got a warning about exactly the same loss.
+    private void ReturnCarriedFood()
     {
+        // Deliberately silent about the overflow.
+        //
+        // AddFood clamps and returns what landed, and both callers used to throw that away - but
+        // announcing each shortfall turned out to be worse than saying nothing: once the larder is
+        // capped every single forager arrival raises it, several times a report. The latched "Food
+        // stores are full" ceiling already tells the player the one thing they can act on, which is
+        // to build a Granary. The digger who cuts through a seed cache still gets her own warning,
+        // because that is a single large loss she could have avoided rather than a steady trickle.
         colonyManager.AddFood(carriedFood);
         carriedFood = 0;
+    }
+    private void DepositFood()
+    {
+        ReturnCarriedFood();
 
         if (forageTarget.HasValue && gridManager.IsFoodSource(forageTarget.Value))
         {

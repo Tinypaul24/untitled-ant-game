@@ -13,6 +13,7 @@ public partial class ColonyUI : CanvasLayer
     private ProgressBar foodBar;
     private Label eggLabel;
     private Button layingButton;
+    private Button eatDeadButton;
     private Label clockLabel;
 
     private Button pauseButton;
@@ -61,6 +62,7 @@ public partial class ColonyUI : CanvasLayer
         populationBlock.TooltipText = "Population capacity for ants, eggs, and larvae combined. Build Nesting Chambers to raise it.";
         eggLabel.TooltipText = "Eggs the Queen has laid. Each one hatches into a larva, which then matures into a worker ant.";
         layingButton = GetNode<Button>("ThemeRoot/BottomBar/Actions/LayingButton");
+        eatDeadButton = GetNode<Button>("ThemeRoot/BottomBar/Actions/EatDeadButton");
         clockLabel = GetNode<Label>("ThemeRoot/ClockLabel");
 
         pauseButton = GetNode<Button>("ThemeRoot/SpeedPanel/SpeedButtons/PauseButton");
@@ -98,6 +100,11 @@ public partial class ColonyUI : CanvasLayer
 
         // The player owns when the colony grows; the Queen just acts on the switch.
         layingButton.Toggled += colonyManager.SetLaying;
+
+        // And what happens to the ones who do not make it. Real ants carry their dead out to a refuse
+        // pile in normal times and eat them in famine, so which one this colony does is the
+        // player's call rather than the game's.
+        eatDeadButton.Toggled += colonyManager.SetEatTheDead;
 
         // Speed controls scale Engine.TimeScale directly, which every delta-based system (movement,
         // dig/forage/build timers, upkeep, the clock) already reads from - nothing else needs to know.
@@ -181,6 +188,9 @@ public partial class ColonyUI : CanvasLayer
         // Reflect the switch, including after a load restores it.
         layingButton.SetPressedNoSignal(colonyManager.LayingEnabled);
         layingButton.Text = colonyManager.LayingEnabled ? "🥚 Laying: on" : "🥚 Laying: off";
+
+        eatDeadButton.SetPressedNoSignal(colonyManager.EatTheDeadPolicy);
+        eatDeadButton.Text = colonyManager.EatTheDeadPolicy ? "☠ Eat dead: on" : "☠ Eat dead: off";
     }
 
     public float CurrentSpeed => currentSpeed;

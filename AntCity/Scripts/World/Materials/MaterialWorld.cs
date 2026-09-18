@@ -1339,6 +1339,30 @@ public partial class MaterialWorld : Node2D
         return taken;
     }
 
+
+    // Tips a load out where it lies, sky rule or not.
+    //
+    // Release is deliberately sky-only, so an ant who dies underground would take her load out of
+    // existence - and matter conservation here is checked to the cell. A dead ant is not making a
+    // decision about where her spoil belongs; it falls off her.
+    public int Spill(Vector2I tile, List<MaterialId> materials)
+    {
+        int kept = 0;
+
+        for (int i = 0; i < materials.Count; i++)
+        {
+            MaterialId material = materials[i];
+
+            if (EmitInto(tile, 1, material) == 0)
+            {
+                materials[kept++] = material;
+            }
+        }
+
+        materials.RemoveRange(kept, materials.Count - kept);
+
+        return kept;
+    }
     // Tips a carried load out, working upward as the lower tiles fill in. Returns how many grains
     // had nowhere to go; those are still in the list, and still hers.
     //

@@ -47,6 +47,7 @@ public partial class TerrainTests : Node
         PullingDownARoomDoesNotStrandItsBuilder();
         ReleasingAClaimKeepsTheJob();
         ARoomGivesUpOnGroundThatTurnedToRock();
+        AStarvedAntTakesHerClaimsWithHer();
         SmoothedRoutesStayWalkable();
         RoutesDoNotBobUpAndDown();
         DugCorridorsStayWalkable();
@@ -998,6 +999,98 @@ public partial class TerrainTests : Node
 
 
 
+
+    // A worker who starves takes every claim she was holding with her.
+    //
+    // Nothing in this game used to free an ant at all - starvation decremented a counter and left
+    // her walking around - so every reference that outlives the scene tree is a new problem, and
+    // there is no second chance to let a claim go.
+    private void AStarvedAntTakesHerClaimsWithHer()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+        var selection = GetNode<SelectionManager>("Main/SelectionManager");
+
+        AntWorker victim = null;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is AntWorker worker)
+            {
+                victim = worker;
+                break;
+            }
+        }
+
+        if (victim == null)
+        {
+            Check(false, "there is a worker to starve");
+            return;
+        }
+
+        // Give her something of everything to be holding.
+        Vector2I food = default;
+        bool haveFood = grid.TryFindForageTarget(victim.Position, 40f * grid.CellSize, out food);
+
+        if (haveFood)
+        {
+            victim.CommandForage(food);
+        }
+
+        selection.Select(victim);
+
+        int antsBefore = colony.Ants;
+        int claimsBefore = build.ClaimedDigCellCount;
+        int obstructionsBefore = build.ObstructionCount;
+        Vector2I diedAt = grid.WorldToCell(victim.Position);
+
+        victim.Die();
+
+        Check(colony.Ants == antsBefore - 1, "the colony is one worker lighter",
+            $"{antsBefore} became {colony.Ants}");
+        Check(build.ClaimedDigCellCount <= claimsBefore, "she let go of any dig claim",
+            $"{claimsBefore} became {build.ClaimedDigCellCount}");
+        Check(build.ObstructionCount == obstructionsBefore,
+            "and did not take a blocked-passage job with her",
+            $"{obstructionsBefore} became {build.ObstructionCount}");
+
+        if (haveFood)
+        {
+            Check(grid.TryFindForageTarget(grid.CellToWorld(food), 3f * grid.CellSize, out _),
+                "the deposit she was walking to is offered to somebody else");
+        }
+
+        // Gone from the tree immediately, not at the end of the frame - a quicksave in the same
+        // frame would otherwise write her into the save.
+        bool stillThere = false;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child == victim)
+            {
+                stillThere = true;
+            }
+        }
+
+        Check(!stillThere, "and she is out of the colony at once");
+        Check(grid.IsCarrion(diedAt), "she leaves a body where she fell");
+        Check(grid.CarrionAt(diedAt) == AntCorpse.FoodValue, "worth what a worker is worth",
+            $"{grid.CarrionAt(diedAt)}");
+
+        // Which the colony can eat, but only when the player says so.
+        colony.SetEatTheDead(false);
+        Check(!grid.IsFoodSource(diedAt), "a body is refuse while the colony is not eating its dead");
+
+        colony.SetEatTheDead(true);
+        Check(grid.IsFoodSource(diedAt), "and food once it is");
+
+        int harvested = grid.Harvest(diedAt, AntCorpse.FoodValue);
+
+        Check(harvested == AntCorpse.FoodValue, "a body is worth a full meal", $"{harvested}");
+        Check(!grid.IsCarrion(diedAt), "and is gone once it has been eaten");
+
+        colony.SetEatTheDead(false);
+    }
     // The job board must not lose work orders.
     //
     // ReleaseClaim used to drop the cell from the obstruction set as well as the claim set, which

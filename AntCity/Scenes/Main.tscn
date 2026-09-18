@@ -219,6 +219,12 @@ text = "🥚 Laying: off"
 layout_mode = 2
 text = "Build"
 
+[node name="EatDeadButton" type="Button" parent="UI/ThemeRoot/BottomBar/Actions"]
+layout_mode = 2
+tooltip_text = "What the colony does with workers who starve. Off, their bodies are carried out to the spoil heap. On, the colony eats them - about 12 food each, less than it cost to raise them."
+toggle_mode = true
+text = "2620 Eat dead: off"
+
 [node name="SpeedPanel" type="PanelContainer" parent="UI/ThemeRoot"]
 anchors_preset = 1
 anchor_left = 1.0
@@ -344,6 +350,7 @@ horizontal_alignment = 1
 autowrap_mode = 2
 text = "Alert"
 
-[node name="ColonyManager" type="Node" parent="." unique_id=635932249 node_paths=PackedStringArray("GameClock")]
+[node name="ColonyManager" type="Node" parent="." unique_id=635932249 node_paths=PackedStringArray("GameClock", "Grid")]
 script = ExtResource("6_pbf1j")
 GameClock = NodePath("../GameClock")
+Grid = NodePath("../GridManager")

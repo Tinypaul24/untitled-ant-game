@@ -39,6 +39,19 @@ public partial class SelectionManager : Node2D
     // Polled rather than routed differently, because moving the handler to _Input would reorder this
     // node against the whole HUD to fix one stuck flag. _Process is still called at TimeScale zero
     // and this check uses no delta, so it works while paused too.
+
+    // An ant who no longer exists.
+    //
+    // selectedAnts is the only long-lived reference to a worker outside the scene tree, so it is the
+    // one place a freed ant could linger and be dereferenced later. Nothing used to free an ant at
+    // all, which is why this never mattered until they started dying.
+    public void Forget(AntWorker ant)
+    {
+        if (selectedAnts.Contains(ant))
+        {
+            RemoveFromSelection(ant);
+        }
+    }
     public override void _Process(double delta)
     {
         if (!isPressed || Input.IsMouseButtonPressed(MouseButton.Left))

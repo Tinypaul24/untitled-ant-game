@@ -31,13 +31,7 @@ public partial class Larva : Node2D
 
     private void Mature()
     {
-        if (!colonyManager.AddAnt())
-        {
-            matureTimer.WaitTime = RecheckSeconds;
-            matureTimer.Start();
-            return;
-        }
-
+        colonyManager.AddAnt();
         colonyManager.RemoveLarva();
 
         Node2D ant = AntWorkerScene.Instantiate<Node2D>();

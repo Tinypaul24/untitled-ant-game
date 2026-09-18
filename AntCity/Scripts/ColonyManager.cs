@@ -11,6 +11,11 @@ public partial class ColonyManager : Node
     [Export]
     public GameClock GameClock { get; set; }
 
+    // Only so the corpse policy can reach the forage search. Null-tolerant: the scenes that have no
+    // grid still have a colony.
+    [Export]
+    public GridManager Grid { get; set; }
+
     public int Ants { get; private set; } = 0;
     public int Food { get; private set; } = 50;
     public int FoodCapacity { get; private set; } = 75;
@@ -178,13 +183,18 @@ public partial class ColonyManager : Node
         return true;
     }
 
+    // A larva finishing is not a decision, it is an arrival.
+    //
+    // This used to refuse when Ants reached Capacity, which is a stricter rule than the one the
+    // colony actually runs on: maturing leaves PopulationUsed unchanged, since a larva becomes an
+    // ant. So a colony pushed over capacity - demolish a Nesting Chamber at full population - left
+    // every larva retrying every two seconds forever, each still eating and each still holding a
+    // population slot that kept the colony over the line. Nothing could ever bring it back under.
+    //
+    // The ceiling belongs at the egg, where DecreaseCapacity already says it does: laying stops
+    // until the population comes back under on its own.
     public bool AddAnt()
     {
-        if (Ants >= Capacity)
-        {
-            return false;
-        }
-
         Ants++;
         EmitSignal(SignalName.ColonyChanged);
 
@@ -340,6 +350,88 @@ public partial class ColonyManager : Node
         EmitSignal(SignalName.ColonyChanged);
     }
 
+
+    // One worker, once an hour, for as long as there is nothing to eat.
+    //
+    // This used to decrement a counter and free nobody, which made starvation a reward rather than a
+    // punishment: upkeep fell while every ant kept digging and foraging, and PopulationUsed fell
+    // too, so HasRoomForMorePopulation went true and the Queen started laying again in the middle of
+    // the famine. A positive feedback loop into the disaster it exists to punish.
+    private void StarveOne()
+    {
+        AntWorker victim = PickTheWeakest();
+
+        if (victim == null)
+        {
+            return;
+        }
+
+        victim.Die();
+
+        RaiseAlert(EatTheDeadPolicy
+            ? "A worker has starved. The colony will eat her."
+            : "A worker has starved. Her body is being carried out.");
+
+        GD.Print("An ant has starved to death.");
+    }
+
+    // Whoever the colony can most afford to lose: somebody carrying nothing and holding no job,
+    // rather than a forager on her way home with food in her jaws. Furthest from the nest breaks
+    // the tie, which is both the most plausible victim and a deterministic rule, so a colony run
+    // twice does the same thing twice.
+    private AntWorker PickTheWeakest()
+    {
+        AntWorker best = null;
+        int bestScore = int.MinValue;
+
+        foreach (Node node in GetTree().GetNodesInGroup("ants"))
+        {
+            if (node is not AntWorker ant)
+            {
+                continue;
+            }
+
+            int score = ant.IsCarryingSomethingUseful ? 0 : 1000;
+
+            score += Mathf.RoundToInt(ant.Position.DistanceTo(nestPosition));
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = ant;
+            }
+        }
+
+        return best;
+    }
+
+    // Where the colony lives, for the victim tie-break. Set by whoever owns the grid, so this class
+    // does not have to know the grid exists.
+    public Vector2 NestPosition { get => nestPosition; set => nestPosition = value; }
+
+    private Vector2 nestPosition;
+
+    // Whether the colony eats its dead or carries them out. The player's decision, alongside laying:
+    // real ants do both, and which one is right depends on how hungry they are.
+    public bool EatTheDeadPolicy { get; private set; }
+
+    public void SetEatTheDead(bool enabled)
+    {
+        if (EatTheDeadPolicy == enabled)
+        {
+            return;
+        }
+
+        EatTheDeadPolicy = enabled;
+
+        // The grid is what foragers ask whether a body is food, so it has to hear about this.
+        if (Grid != null)
+        {
+            Grid.EatTheDead = enabled;
+        }
+
+        EmitSignal(SignalName.ColonyChanged);
+    }
     private void ConsumeUpkeep()
     {
         int upkeep = UpkeepPerHour;
@@ -359,14 +451,24 @@ public partial class ColonyManager : Node
         {
             Food = 0;
             starvingIntervalStreak++;
-            GD.Print($"The colony is starving! ({starvingIntervalStreak} hour(s) with no food)");
-            RaiseAlert("The colony is starving!");
 
-            if (starvingIntervalStreak >= StarvingHoursBeforeLoss && RemoveAnt())
+            int hoursLeft = StarvingHoursBeforeLoss - starvingIntervalStreak + 1;
+
+            // Warned before anyone dies, and counted down, so a famine is something you are told
+            // about while you can still act on it rather than something you learn about from the
+            // obituary. The first one also says where the choice about the dead is made.
+            if (hoursLeft > 0)
             {
-                GD.Print("An ant has starved to death.");
-                RaiseAlert("An ant has starved to death.");
-                starvingIntervalStreak = 0;
+                RaiseAlert(starvingIntervalStreak == 1
+                    ? $"The colony is going hungry. {hoursLeft} hours before they start to die."
+                    : $"Still no food. {hoursLeft} hour{(hoursLeft == 1 ? "" : "s")} before they start to die.");
+            }
+
+            GD.Print($"The colony is starving! ({starvingIntervalStreak} hour(s) with no food)");
+
+            if (starvingIntervalStreak >= StarvingHoursBeforeLoss)
+            {
+                StarveOne();
             }
         }
 

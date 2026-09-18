@@ -170,6 +170,12 @@ public partial class GridManager : Node2D
 
         NestCenterCell = SurfaceNestCell;
 
+        // So the colony can pick who starves without having to know the grid exists.
+        if (ColonyManager != null)
+        {
+            ColonyManager.NestPosition = CellToWorld(NestCenterCell);
+        }
+
         // Pre-generate enough terrain around the nest to fill the initial view; everything further
         // out is generated on demand as ants path or dig toward it, so the map keeps expanding.
         Vector2I nestChunk = CellToChunk(NestCenterCell);
@@ -412,11 +418,86 @@ public partial class GridManager : Node2D
     }
 
 
+
+    // ---- the dead ------------------------------------------------------------------------------
+    //
+    // Bodies are tracked in their own map rather than as a food tile type. Food tiles are diggable
+    // and not walkable, so turning the cell an ant died in into one would wall off the corridor she
+    // died in - and a corpse is meant to be something you walk up to, not something you excavate.
+    //
+    // Everything else about them goes through the ordinary forage pipeline: IsFoodSource,
+    // GetFoodAmount, Harvest and TryFindForageTarget all consult this, so a forager treats a body
+    // exactly as she treats a seed cache and none of her code had to learn what a corpse is.
+    private readonly Dictionary<Vector2I, int> carrionRemaining = new();
+
+    // Whether the colony eats its dead or carries them out to the refuse heap. The player's call -
+    // real ants do both, depending on how hungry they are.
+    public bool EatTheDead { get; set; }
+
+    public void AddCarrion(Vector2I cell, int food)
+    {
+        carrionRemaining.TryGetValue(cell, out int already);
+        carrionRemaining[cell] = already + food;
+
+        EmitSignal(SignalName.TerrainChanged);
+    }
+
+    public void RemoveCarrion(Vector2I cell)
+    {
+        if (carrionRemaining.Remove(cell))
+        {
+            claimedForageCells.Remove(cell);
+            EmitSignal(SignalName.TerrainChanged);
+        }
+    }
+
+    public int CarrionAt(Vector2I cell)
+    {
+        return carrionRemaining.TryGetValue(cell, out int food) ? food : 0;
+    }
+
+    public bool IsCarrion(Vector2I cell) => CarrionAt(cell) > 0;
+
+    // The nearest body nobody has gone for yet, whatever the policy is. Used by the workers who
+    // carry the dead out, which is what happens when the colony is not eating them.
+    public bool TryFindCarrion(Vector2 fromPosition, float maxDistance, out Vector2I cell)
+    {
+        cell = default;
+
+        float bestDistance = maxDistance * maxDistance;
+        bool found = false;
+
+        foreach (System.Collections.Generic.KeyValuePair<Vector2I, int> entry in carrionRemaining)
+        {
+            if (claimedForageCells.Contains(entry.Key))
+            {
+                continue;
+            }
+
+            float distance = CellToWorld(entry.Key).DistanceSquaredTo(fromPosition);
+
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                cell = entry.Key;
+                found = true;
+            }
+        }
+
+        return found;
+    }
     public bool IsFoodSource(Vector2I cell)
     {
         if (!IsInBounds(cell))
         {
             return false;
+        }
+
+        // A body the colony is willing to eat counts as a source. When the policy is to carry the
+        // dead out instead, it is refuse rather than food and foragers ignore it.
+        if (EatTheDead && IsCarrion(cell))
+        {
+            return true;
         }
 
         TileType type = GetTile(cell);
@@ -425,6 +506,11 @@ public partial class GridManager : Node2D
 
     public int GetFoodAmount(Vector2I cell)
     {
+        if (EatTheDead && IsCarrion(cell))
+        {
+            return CarrionAt(cell);
+        }
+
         return foodRemaining.TryGetValue(cell, out int amount) ? amount : 0;
     }
 
@@ -471,6 +557,28 @@ public partial class GridManager : Node2D
                 bestDistance = distance;
                 cell = entry.Key;
                 found = true;
+            }
+        }
+
+        // And the dead, when the colony is eating them. Same loop, same claim rules - a body is just
+        // another thing worth walking to.
+        if (EatTheDead)
+        {
+            foreach (KeyValuePair<Vector2I, int> entry in carrionRemaining)
+            {
+                if (claimedForageCells.Contains(entry.Key))
+                {
+                    continue;
+                }
+
+                float distance = CellToWorld(entry.Key).DistanceSquaredTo(fromPosition);
+
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    cell = entry.Key;
+                    found = true;
+                }
             }
         }
 
@@ -678,6 +786,22 @@ public partial class GridManager : Node2D
         int available = GetFoodAmount(cell);
         int harvested = Mathf.Min(amount, available);
         int remaining = available - harvested;
+
+        // A body is eaten rather than mined: no tile changes hands, the corpse node simply notices
+        // it has been picked clean and removes itself.
+        if (EatTheDead && IsCarrion(cell))
+        {
+            if (remaining <= 0)
+            {
+                RemoveCarrion(cell);
+            }
+            else
+            {
+                carrionRemaining[cell] = remaining;
+            }
+
+            return harvested;
+        }
 
         if (remaining <= 0)
         {
