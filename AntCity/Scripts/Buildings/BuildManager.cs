@@ -281,6 +281,13 @@ public partial class BuildManager : Node2D
 
     public void ReportFurnishDone(Room room)
     {
+        // This is the single place a room grants its effect, so it is the right place to refuse to
+        // grant one for a room that has been pulled down while somebody was still furnishing it.
+        if (!GodotObject.IsInstanceValid(room) || !rooms.Contains(room))
+        {
+            return;
+        }
+
         room.Activate();
 
         BuildingDef def = BuildingDefs.All[room.Type];
@@ -347,8 +354,15 @@ public partial class BuildManager : Node2D
     {
         CancelPlacement();
 
+        // The selection is about to be freed along with everything else. Without this the inspector
+        // stays open showing a room from the previous world, its Pull down button silently does
+        // nothing, and clicking any other room afterwards touches the disposed one.
+        ClearSelection();
+
         foreach (Room room in rooms)
         {
+            StopCementingWalls(room);
+            TellAntsToForget(room);
             room.GetParent()?.RemoveChild(room);
             room.QueueFree();
         }
@@ -655,7 +669,10 @@ public partial class BuildManager : Node2D
             return;
         }
 
-        if (Selected != null)
+        // A freed node leaves a live C# wrapper, so a null check is not enough to know it is safe
+        // to touch. Secondary guard: the primary fix is that nothing frees a room without telling
+        // its holders first.
+        if (GodotObject.IsInstanceValid(Selected))
         {
             Selected.IsSelected = false;
         }
@@ -713,10 +730,27 @@ public partial class BuildManager : Node2D
 
         rooms.Remove(room);
         StopCementingWalls(room);
+        TellAntsToForget(room);
         room.GetParent()?.RemoveChild(room);
         room.QueueFree();
 
         ColonyManager.RaiseAlert($"{def.Name} pulled down. {refund} food recovered.");
+    }
+
+    // Nobody should be left holding a room that is about to stop existing.
+    //
+    // The "ants" group is how SelectionManager and the antennation check already find every worker,
+    // so there is no new bookkeeping here - and demolition is a rare player action, so walking the
+    // group costs nothing worth measuring.
+    private void TellAntsToForget(Room room)
+    {
+        foreach (Node node in GetTree().GetNodesInGroup("ants"))
+        {
+            if (node is AntWorker ant)
+            {
+                ant.ForgetRoom(room);
+            }
+        }
     }
 
     // The cavity stays dug. Only what the room *did* is taken back.

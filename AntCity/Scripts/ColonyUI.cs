@@ -134,6 +134,14 @@ public partial class ColonyUI : CanvasLayer
     public override void _Process(double delta)
     {
         clockLabel.Text = gameClock.GetFormattedTime();
+
+        // The inspector used to be a snapshot taken the instant you clicked. Select a room mid-dig
+        // and it would still read "40%, 6 cells to go" long after the ants had finished, furnished
+        // and activated it - the only way to see the truth was to deselect and click again.
+        if (roomPanel.Visible && GodotObject.IsInstanceValid(buildManager.Selected))
+        {
+            ShowRoom(buildManager.Selected);
+        }
     }
 
     private void UpdateUI()

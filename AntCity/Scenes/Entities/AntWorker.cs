@@ -726,11 +726,14 @@ public partial class AntWorker : Area2D
             claimedJobCell = null;
         }
 
-        if (pendingRoom != null)
+        // IsInstanceValid, not a null check: a freed Godot node leaves a live C# wrapper behind, so
+        // `!= null` passes and the very next member access throws.
+        if (GodotObject.IsInstanceValid(pendingRoom))
         {
             pendingRoom.FurnishClaimed = false;
-            pendingRoom = null;
         }
+
+        pendingRoom = null;
     }
 
     // Look for open job-board work before falling back to aimless wandering.
@@ -940,7 +943,9 @@ public partial class AntWorker : Area2D
     }
 
     // Walk to a room's stand cell (already fully dug) and work its furnish timer.
-    private void CommandBuild(Room room)
+    // Public so a test can hand a worker a furnish job without waiting for the job board to offer
+    // her one. Same path TryClaimFurnishJob takes.
+    public void CommandBuild(Room room)
     {
         StopCurrentTask();
 
@@ -1457,10 +1462,47 @@ public partial class AntWorker : Area2D
     }
 
 
+
+    // The room she was going to furnish has been pulled down.
+    //
+    // Pushed to her rather than checked by her. A validity check alone stops the crash but leaves
+    // her holding a job that no longer exists with no story for what she does next; being told means
+    // she can unwind and go find other work, which is the behaviour actually wanted. It also avoids
+    // a signal subscription per ant, which would be a lifetime problem the moment ants start dying.
+    public void ForgetRoom(Room room)
+    {
+        if (pendingRoom != room)
+        {
+            return;
+        }
+
+        pendingRoom = null;
+        buildTimer.Stop();
+
+        if (state == State.Building)
+        {
+            GoIdle();
+        }
+    }
     private void StartBuilding()
     {
+        // The room can have been pulled down while she was walking to it.
+        if (!GodotObject.IsInstanceValid(pendingRoom))
+        {
+            pendingRoom = null;
+            GoIdle();
+            return;
+        }
+
         state = State.Building;
-        buildTimer.WaitTime = BuildingDefs.All[pendingRoom.Type].FurnishSecondsPerCell * pendingRoom.CellCount;
+
+        // Floored, because a restored room recomputes its cells from current terrain and can come
+        // back owning none. Godot refuses a non-positive wait time and silently keeps the previous
+        // one, so the symptom would be a room furnished in whatever the last room took.
+        buildTimer.WaitTime = Mathf.Max(
+            0.1f,
+            BuildingDefs.All[pendingRoom.Type].FurnishSecondsPerCell * pendingRoom.CellCount);
+
         buildTimer.Start();
     }
 
@@ -1468,7 +1510,14 @@ public partial class AntWorker : Area2D
     {
         Room room = pendingRoom;
         pendingRoom = null;
-        buildManager.ReportFurnishDone(room);
+
+        // Only if it is still there. Demolishing a room mid-furnish used to land here holding a
+        // freed node, and ReportFurnishDone calls Activate on it, which throws inside a timer
+        // handler - Godot prints and swallows that, leaving her in Building with no way out.
+        if (GodotObject.IsInstanceValid(room))
+        {
+            buildManager.ReportFurnishDone(room);
+        }
 
         wanderHome = Position;
         GoIdle();

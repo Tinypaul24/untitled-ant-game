@@ -44,6 +44,7 @@ public partial class TerrainTests : Node
         RoomsNeedWallsAroundThem();
         RoomWallsCementThemselves();
         AnIdleAntAlwaysFindsSomethingToDo();
+        PullingDownARoomDoesNotStrandItsBuilder();
         SmoothedRoutesStayWalkable();
         RoutesDoNotBobUpAndDown();
         DugCorridorsStayWalkable();
@@ -993,6 +994,84 @@ public partial class TerrainTests : Node
     }
 
 
+
+    // Pulling a room down out from under the worker furnishing it.
+    //
+    // Demolish frees the Room node, and a freed Godot node leaves a live C# wrapper behind - so the
+    // ant's `pendingRoom != null` check passed and the very next member access threw, inside a timer
+    // handler, where Godot prints the exception and swallows it. She was left in Building with no
+    // way out. Three separate dereferences had the same hole.
+    private void PullingDownARoomDoesNotStrandItsBuilder()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+
+        colony.AddFood(300);
+
+        Vector2I origin = FindDiggableNear(grid.NestCenterCell + new Vector2I(-146, 10));
+
+        for (int x = 0; x < 3; x++)
+        {
+            for (int y = 0; y < 2; y++)
+            {
+                grid.Dig(origin + new Vector2I(x, y));
+            }
+        }
+
+        materials.DeriveDirtyTiles();
+
+        if (!build.TryCreateRoom(new Rect2I(origin, new Vector2I(3, 2)), BuildingType.Granary))
+        {
+            Check(false, "a room could be placed to demolish");
+            return;
+        }
+
+        AntWorker builder = null;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is AntWorker worker)
+            {
+                builder = worker;
+                break;
+            }
+        }
+
+        Room placed = null;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is Room room && room.Footprint.Position == origin)
+            {
+                placed = room;
+            }
+        }
+
+        if (builder == null || placed == null)
+        {
+            Check(false, "a builder and a room to take from her");
+            return;
+        }
+
+        int capacityBefore = colony.Capacity;
+        int foodCapBefore = colony.FoodCapacity;
+
+        // She takes the job, then the player changes their mind.
+        build.SelectRoom(placed);
+        builder.CommandBuild(placed);
+        build.Demolish(placed);
+
+        Check(build.Selected == null, "demolishing clears the selection");
+
+        // The furnish timer fires anyway - this is the moment that used to throw.
+        builder.GetNode<Timer>("BuildTimer").EmitSignal(Timer.SignalName.Timeout);
+
+        Check(!builder.IsStalled, "her builder is not left with nothing to do");
+        Check(colony.FoodCapacity == foodCapBefore,
+            "a demolished room grants nothing when its timer fires",
+            $"{foodCapBefore} became {colony.FoodCapacity}");
+        Check(colony.Capacity == capacityBefore, "and no capacity either");
+    }
     // An ant always has something pending.
     //
     // She is never left non-Walking with every timer stopped: no route, no callback, nothing to wake
