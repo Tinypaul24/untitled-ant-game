@@ -252,6 +252,8 @@ public partial class AntWorker : Area2D
             }
 
             CheckForPassingAnt();
+
+            WatchForIdleStall();
         }
 
         antennationCooldown -= delta;
@@ -386,7 +388,10 @@ public partial class AntWorker : Area2D
 
     private void Greet()
     {
-        if (escaping || antennationTimer > 0)
+        // Walkers only, matching the precondition CheckForPassingAnt applies to itself. The pause is
+        // only ever ticked down inside Steer, so setting it on a digging or foraging ant leaves it
+        // set until her next walk and then stalls the start of it.
+        if (escaping || antennationTimer > 0 || state != State.Walking)
         {
             return;
         }
@@ -414,6 +419,7 @@ public partial class AntWorker : Area2D
     {
         StallRescues = 0;
         SpoilLeftovers = 0;
+        IdleStallRescues = 0;
     }
 
     // Last resort. Stranding is a one-way failure in this game, so an ant must never be able to
@@ -695,6 +701,20 @@ public partial class AntWorker : Area2D
 
         ReleaseForageTarget();
         hasDigJob = false;
+
+        // The wander timer too.
+        //
+        // It was never stopped anywhere except on load, so a stale one-to-three-second timer armed
+        // before the player gave an order would fire mid-journey, run GoIdle, and silently replace
+        // that order with whatever the job board offered instead. From the player side an ant
+        // accepted a command and then wandered off to do something else, with no feedback.
+        //
+        // This is also what makes it provable that a Walking ant cannot enter GoIdle, which is the
+        // property the guard deleted from PickWanderTarget was faking.
+        wanderTimer.Stop();
+
+        // One trail attempt per idle spell, and an interrupted walk should not burn it.
+        followedTrail = false;
     }
 
     // Release whatever job-board work is in flight so a manual command doesn't leave it stuck claimed forever.
@@ -714,8 +734,67 @@ public partial class AntWorker : Area2D
     }
 
     // Look for open job-board work before falling back to aimless wandering.
+
+    // How many times an ant has had to be shaken out of doing nothing at all.
+    //
+    // Same principle as StallRescues: the normaliser in GoIdle fixes the paths we know about, and
+    // this catches the one somebody adds next year. It should read zero - a safety net that catches
+    // people every day is a hole in the floor, and if this number climbs there is a route into the
+    // frozen state that has not been found yet.
+    public static int IdleStallRescues { get; private set; }
+
+    // Two seconds of genuinely nothing pending. Long enough that no legitimate gap between finishing
+    // one thing and starting the next can trip it - every real handover is same-frame.
+    private const double IdleStallSeconds = 2.0;
+
+    private double idleStallTimer;
+
+    private void WatchForIdleStall()
+    {
+        if (!IsStalled)
+        {
+            idleStallTimer = 0;
+            return;
+        }
+
+        idleStallTimer += HazardCheckSeconds;
+
+        if (idleStallTimer < IdleStallSeconds)
+        {
+            return;
+        }
+
+        idleStallTimer = 0;
+        IdleStallRescues++;
+
+        GoIdle();
+    }
+    // Everything she could be part-way through, put down.
+    //
+    // GoIdle is the colony's single "what should I do next" entry point, and it should not care how
+    // she arrived at it. Several paths reached it with state still Digging or Building - and
+    // PickWanderTarget used to return immediately unless the state was already Idle, so she ended up
+    // with no route, no running timer and no callback: frozen for the rest of the game, still
+    // eating. Guarding PickWanderTarget would have fixed the last of four exits and not the fifth
+    // somebody writes next year. Normalising here fixes all of them at once.
+    private void BecomeIdle()
+    {
+        digTimer.Stop();
+        forageTimer.Stop();
+        buildTimer.Stop();
+        wanderTimer.Stop();
+
+        pendingDigCallback = null;
+        state = State.Idle;
+
+        velocity = Vector2.Zero;
+        legDirection = Vector2.Zero;
+    }
+
     private void GoIdle()
     {
+        BecomeIdle();
+
         // Spoil can pile up deep enough to set solid around her; dig back out before anything else.
         if (TryDigOut() || TryFall())
         {
@@ -1198,16 +1277,34 @@ public partial class AntWorker : Area2D
 
     // Re-enters whichever job was interrupted for a haul trip, by target rather than by raw callback,
     // since the ant is now standing at the dump and needs a fresh route back to the dig front.
+    // Back to whatever she was doing before the haul - if it is still there to do.
+    //
+    // Both branches used to dispatch blind. CommandForage silently returns when the source is no
+    // longer a food source, which leaves her with no path, no timer and no callback - frozen,
+    // holding the forage claim, so nobody else can take that deposit either. And the dig branch
+    // used the raw digTarget field, which is (0,0) for an ant who never had a dig order: a worker
+    // who filled her jaws digging herself out of settled spoil would, after dumping, set off on a
+    // march to the top-left corner of the world.
     private void ResumeDigJob()
     {
         if (forageTarget.HasValue)
         {
-            CommandForage(forageTarget.Value);
+            if (gridManager.IsFoodSource(forageTarget.Value))
+            {
+                CommandForage(forageTarget.Value);
+                return;
+            }
+
+            ReleaseForageTarget();
         }
-        else
+
+        if (hasDigJob && gridManager.CanDig(digTarget))
         {
             IssueDigCommand(digTarget, digTarget);
+            return;
         }
+
+        GoIdle();
     }
 
     // Shared by plain digging and forage-approach: walk into the next cell if it's already open, otherwise dig through it first.
@@ -1383,13 +1480,11 @@ public partial class AntWorker : Area2D
         GoIdle();
     }
 
+    // No guard on the state here any more. There used to be an early return unless she was already
+    // Idle, which quietly turned "she had nothing else to do" into "she does nothing ever again" -
+    // GoIdle now normalises on entry, so by the time this runs she is Idle by construction.
     private void PickWanderTarget()
     {
-        if (state != State.Idle)
-        {
-            return;
-        }
-
         Vector2I home = gridManager.WorldToCell(wanderHome);
         Vector2I candidate = home + new Vector2I(
             (int)GD.RandRange(-WanderCellRadius, WanderCellRadius),

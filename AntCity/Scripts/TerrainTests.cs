@@ -43,6 +43,7 @@ public partial class TerrainTests : Node
         RoomsCanBePlacedAndFinished();
         RoomsNeedWallsAroundThem();
         RoomWallsCementThemselves();
+        AnIdleAntAlwaysFindsSomethingToDo();
         SmoothedRoutesStayWalkable();
         RoutesDoNotBobUpAndDown();
         DugCorridorsStayWalkable();
@@ -991,6 +992,41 @@ public partial class TerrainTests : Node
         RoomsCanBePulledDownAgain(build, colony, placed, capacityBefore);
     }
 
+
+    // An ant always has something pending.
+    //
+    // She is never left non-Walking with every timer stopped: no route, no callback, nothing to wake
+    // her. That state used to be reachable from four places, because GoIdle could be entered while
+    // she was still Digging or Building and PickWanderTarget then refused to do anything.
+    //
+    // Driven through the wander timer, which is the real signal that runs GoIdle, and fired on every
+    // worker in the colony whatever she happens to be doing - which is exactly the case that broke.
+    private void AnIdleAntAlwaysFindsSomethingToDo()
+    {
+        int checked_ = 0;
+        int stalled = 0;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is not AntWorker ant)
+            {
+                continue;
+            }
+
+            ant.GetNode<Timer>("WanderTimer").EmitSignal(Timer.SignalName.Timeout);
+
+            checked_++;
+
+            if (ant.IsStalled)
+            {
+                stalled++;
+            }
+        }
+
+        Check(checked_ > 0, "there are workers to check", $"{checked_} ants");
+        Check(stalled == 0, "no worker is left with nothing pending after going idle",
+            $"{stalled} of {checked_} stalled");
+    }
     // Each chamber is a chamber, not part of an open-plan cavern.
 
     // Ants plaster the wall of a finished chamber, the same way they plaster the burrow.
