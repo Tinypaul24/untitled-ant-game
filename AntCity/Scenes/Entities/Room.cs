@@ -146,6 +146,17 @@ public partial class Room : Node2D
         QueueRedraw();
     }
 
+
+    // Ground the room is never going to get - it turned to rock after the room was placed. Dropped
+    // from both sets, so the room's size, its effect and its refund all shrink honestly.
+    public void AbandonCell(Vector2I cell)
+    {
+        pendingDigCells.Remove(cell);
+        ownedCells.Remove(cell);
+
+        QueueRedraw();
+    }
+
     public void NotifyCellDug(Vector2I cell)
     {
         pendingDigCells.Remove(cell);

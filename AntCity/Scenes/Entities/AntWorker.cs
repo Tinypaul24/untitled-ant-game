@@ -1097,7 +1097,10 @@ public partial class AntWorker : Area2D
         // and waiting to occupy one is how a digger used to strand herself breaking in from above.
         if (!gridManager.CanDig(digTarget))
         {
-            claimedJobCell = null;
+            // AbandonCurrentJob, not just dropping the reference. Letting go of the field without
+            // telling the job board left the cell in claimedDigCells forever, so every future ant
+            // skipped it and the room it belonged to stayed Excavating for the rest of the game.
+            AbandonCurrentJob();
             hasDigJob = false;
 
             if (carriedGrains.Count > 0)

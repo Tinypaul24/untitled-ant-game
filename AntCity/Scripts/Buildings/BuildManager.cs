@@ -156,6 +156,12 @@ public partial class BuildManager : Node2D
         bool found = false;
         float bestDistance = float.MaxValue;
 
+        // Cells that are no longer worth offering, collected rather than acted on in place: you
+        // cannot mutate a room's pending set while enumerating it. Same shape as the obstruction
+        // loop's stale list below, which has always pruned - the room loop never did, so a cell that
+        // stopped being diggable was handed out forever and the room could never finish.
+        List<(Room Room, Vector2I Cell, bool Opened)> stalePending = null;
+
         foreach (Room room in rooms)
         {
             if (room.State != Room.RoomState.Excavating)
@@ -165,6 +171,23 @@ public partial class BuildManager : Node2D
 
             foreach (Vector2I candidate in room.PendingDigCells)
             {
+                // Already open, but the room never heard - CellOpened can be missed if the tile was
+                // opened by something other than a dig.
+                if (GridManager.IsTunnel(candidate))
+                {
+                    (stalePending ??= new()).Add((room, candidate, true));
+                    continue;
+                }
+
+                // Turned to something nobody can dig. Lava meeting water leaves stone, and stone
+                // inside a footprint is not the room's any more - exactly as rock that was there
+                // from the start was never the room's.
+                if (!GridManager.CanDig(candidate))
+                {
+                    (stalePending ??= new()).Add((room, candidate, false));
+                    continue;
+                }
+
                 if (claimedDigCells.Contains(candidate))
                 {
                     continue;
@@ -181,6 +204,11 @@ public partial class BuildManager : Node2D
             }
         }
 
+        if (stalePending != null)
+        {
+            RetireStaleRoomCells(stalePending);
+        }
+
         if (found)
         {
             claimedDigCells.Add(cell);
@@ -189,6 +217,52 @@ public partial class BuildManager : Node2D
         return found;
     }
 
+
+    // Takes cells off a room that it is never going to get.
+    //
+    // A cell that quietly opened is simply reported dug. A cell that turned to rock stops being the
+    // room's at all - which is the same answer the room already gives to rock that was there when it
+    // was placed, so its size, its effect and its refund all shrink honestly rather than the room
+    // waiting forever for ground nobody can move.
+    private void RetireStaleRoomCells(List<(Room Room, Vector2I Cell, bool Opened)> stale)
+    {
+        var touched = new HashSet<Room>();
+
+        foreach ((Room room, Vector2I cell, bool opened) in stale)
+        {
+            claimedDigCells.Remove(cell);
+
+            if (opened)
+            {
+                room.NotifyCellDug(cell);
+            }
+            else
+            {
+                room.AbandonCell(cell);
+                roomsByCell.Remove(cell);
+            }
+
+            touched.Add(room);
+        }
+
+        foreach (Room room in touched)
+        {
+            // Nothing left to build. The rock took it back, and a room owning no ground is not a
+            // room - it would sit there unfurnishable with an effect of zero.
+            if (room.CellCount == 0)
+            {
+                ColonyManager.RaiseAlert($"{BuildingDefs.All[room.Type].Name} abandoned - the rock took it back.");
+                Demolish(room);
+                continue;
+            }
+
+            if (room.State == Room.RoomState.Excavating && room.IsFullyDug)
+            {
+                room.BeginFurnishing();
+                StartCementingWalls(room);
+            }
+        }
+    }
     private bool TryClaimNearestObstruction(Vector2 fromPosition, out Vector2I cell)
     {
         cell = default;
@@ -273,10 +347,20 @@ public partial class BuildManager : Node2D
     }
 
     // Called when an ant working a claimed dig cell gets redirected before finishing it.
+    // Hands a job back to the board. It does not retire it.
+    //
+    // This used to drop the cell from obstructions as well, which destroys the work order rather
+    // than releasing it - and TileObstructed only fires on a walkable-to-blocked transition, so once
+    // the tile is already blocked nothing ever re-creates it. Any redirect of the claiming ant -
+    // a player order, fleeing lava, a load - permanently deleted the only record that a corridor had
+    // caved in. If it was the doorstep, the colony was walled out of its own nest with nothing on
+    // the board to fix it.
+    //
+    // Obstructions retire in the two places that mean they are genuinely done: OnCellDug when one is
+    // dug out, and the staleness prune in TryClaimNearestObstruction when one stops being diggable.
     public void ReleaseClaim(Vector2I cell)
     {
         claimedDigCells.Remove(cell);
-        obstructions.Remove(cell);
     }
 
     public void ReportFurnishDone(Room room)

@@ -45,6 +45,8 @@ public partial class TerrainTests : Node
         RoomWallsCementThemselves();
         AnIdleAntAlwaysFindsSomethingToDo();
         PullingDownARoomDoesNotStrandItsBuilder();
+        ReleasingAClaimKeepsTheJob();
+        ARoomGivesUpOnGroundThatTurnedToRock();
         SmoothedRoutesStayWalkable();
         RoutesDoNotBobUpAndDown();
         DugCorridorsStayWalkable();
@@ -995,6 +997,139 @@ public partial class TerrainTests : Node
 
 
 
+
+    // The job board must not lose work orders.
+    //
+    // ReleaseClaim used to drop the cell from the obstruction set as well as the claim set, which
+    // destroys the work order rather than handing it back - and TileObstructed only fires on a
+    // walkable-to-blocked transition, so nothing ever re-created it. Any redirect of the claiming
+    // ant permanently deleted the only record that a corridor had caved in.
+    private void ReleasingAClaimKeepsTheJob()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+
+        // A corridor cell, then filled in under her - exactly what settling spoil does.
+        Vector2I corridor = FindDiggableNear(grid.NestCenterCell + new Vector2I(-158, 12));
+        grid.Dig(corridor);
+        materials.DeriveDirtyTiles();
+
+        int before = build.ObstructionCount;
+        int claimsBefore = build.ClaimedDigCellCount;
+
+        grid.SetTileFromSimulation(corridor, GridManager.TileType.Dirt);
+
+        Check(build.ObstructionCount == before + 1, "a caved-in corridor raises a job",
+            $"{before} became {build.ObstructionCount}");
+
+        if (!build.TryClaimDigJob(grid.CellToWorld(corridor), out Vector2I claimed))
+        {
+            Check(false, "the job can be claimed");
+            return;
+        }
+
+        build.ReleaseClaim(claimed);
+
+        Check(build.ObstructionCount == before + 1, "releasing a claim does not delete the job",
+            $"{build.ObstructionCount} obstructions left");
+        // Measured against what the board was already holding. Earlier tests leave live claims of
+        // their own, so a global zero here would be asserting something about them instead.
+        Check(build.ClaimedDigCellCount == claimsBefore, "and the claim itself is let go",
+            $"{claimsBefore} became {build.ClaimedDigCellCount}");
+        Check(build.TryClaimDigJob(grid.CellToWorld(corridor), out _),
+            "so somebody else can pick it up");
+
+        build.ReleaseClaim(corridor);
+
+        // Dug back out, which is the other half of the contract: a job retires when it is genuinely
+        // done. Also stops this obstruction outranking every room in the tests that follow, since
+        // clearing blocked passages deliberately takes priority over starting new chambers.
+        grid.Dig(corridor);
+
+        Check(build.ObstructionCount == before, "and retires once the corridor is open again",
+            $"{build.ObstructionCount} obstructions left");
+    }
+
+    // A room cannot wait forever for ground nobody can move.
+    //
+    // A pending cell that turns to rock - lava meeting water leaves stone - was handed out forever,
+    // and the ant who walked to it dropped her claim without telling the board, so the cell stayed
+    // claimed and every future ant skipped it. The room stayed Excavating for the rest of the game.
+    private void ARoomGivesUpOnGroundThatTurnedToRock()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+
+        colony.AddFood(300);
+
+        Vector2I origin = FindDiggableNear(grid.NestCenterCell + new Vector2I(-170, 10));
+
+        // Dig all but one cell, so exactly one is pending and it is the one we petrify.
+        for (int x = 0; x < 3; x++)
+        {
+            for (int y = 0; y < 2; y++)
+            {
+                if (x != 2 || y != 1)
+                {
+                    grid.Dig(origin + new Vector2I(x, y));
+                }
+            }
+        }
+
+        materials.DeriveDirtyTiles();
+
+        if (!build.TryCreateRoom(new Rect2I(origin, new Vector2I(3, 2)), BuildingType.Granary))
+        {
+            Check(false, "a room could be placed over ground that will petrify");
+            return;
+        }
+
+        Room placed = null;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is Room room && room.Footprint.Position == origin)
+            {
+                placed = room;
+            }
+        }
+
+        if (placed == null || placed.State != Room.RoomState.Excavating)
+        {
+            Check(false, "the room starts out excavating", $"{placed?.State}");
+            return;
+        }
+
+        int cellsBefore = placed.CellCount;
+
+        // Whichever cell is actually still pending, rather than the one the layout suggests should
+        // be: generation puts rock where it likes, so which of the six the room ended up owning -
+        // and which of those Dig managed to open - is not something the test gets to assume.
+        Vector2I pending = default;
+        bool havePending = false;
+
+        foreach (Vector2I candidate in placed.PendingDigCells)
+        {
+            pending = candidate;
+            havePending = true;
+            break;
+        }
+
+        if (!havePending)
+        {
+            Check(false, "the room has a cell left to dig");
+            return;
+        }
+
+        grid.SetTileFromSimulation(pending, GridManager.TileType.Rock);
+
+        // The board is asked for work, which is when staleness gets noticed.
+        build.TryClaimDigJob(grid.CellToWorld(origin), out _);
+
+        Check(placed.State != Room.RoomState.Excavating,
+            "a room stops excavating ground that turned to rock", $"{placed.State}");
+        Check(placed.CellCount == cellsBefore - 1, "and stops counting it as its own",
+            $"{cellsBefore} became {placed.CellCount}");
+    }
     // Pulling a room down out from under the worker furnishing it.
     //
     // Demolish frees the Room node, and a freed Godot node leaves a live C# wrapper behind - so the
