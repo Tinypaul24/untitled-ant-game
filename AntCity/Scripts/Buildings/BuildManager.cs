@@ -73,6 +73,45 @@ public partial class BuildManager : Node2D
         GridManager.TileObstructed += OnTileObstructed;
     }
 
+
+    // Everything the board is holding that belongs to the world being thrown away.
+    //
+    // None of this is saved, because none of it is state a player would recognise - it is who
+    // claimed what, a minute ago, in a colony that is about to stop existing. Left alone it leaks:
+    // claims on cells that no longer mean anything, and obstruction jobs pointing at coordinates
+    // from a different world that outrank every real room.
+    public void ResetTransientState()
+    {
+        CancelPlacement();
+        ClearSelection();
+
+        claimedDigCells.Clear();
+        obstructions.Clear();
+    }
+
+    // Obstructions only ever come from a walkable-to-blocked transition, and a load produces no
+    // transitions - so a save whose doorstep was already buried when it was written comes back with
+    // nothing on the board to clear it, forever. Re-seed by looking.
+    public void SeedDoorstepObstructions()
+    {
+        int apron = GridManager.SurfaceHeight;
+
+        for (int y = 0; y <= apron; y++)
+        {
+            for (int x = -EntranceScanTiles; x <= EntranceScanTiles; x++)
+            {
+                var cell = new Vector2I(GridManager.NestCenterCell.X + x, y);
+
+                if (GridManager.IsDoorstep(cell) && GridManager.CanDig(cell))
+                {
+                    obstructions.Add(cell);
+                }
+            }
+        }
+    }
+
+    private const int EntranceScanTiles = 6;
+
     public void BeginPlacement(BuildingType type)
     {
         pendingType = type;
@@ -147,6 +186,14 @@ public partial class BuildManager : Node2D
 
     public bool TryClaimDigJob(Vector2 fromPosition, out Vector2I cell)
     {
+        // Retiring dead room cells happens whatever else the board is holding.
+        //
+        // It used to be folded into the room loop below, which never runs when there is an
+        // obstruction to clear - and clearing blocked passages deliberately outranks starting new
+        // chambers. So a colony with any persistent blockage never pruned its rooms at all, and a
+        // room waiting on ground that had turned to rock waited forever.
+        PruneStaleRoomCells();
+
         if (TryClaimNearestObstruction(fromPosition, out cell))
         {
             return true;
@@ -155,12 +202,6 @@ public partial class BuildManager : Node2D
         cell = default;
         bool found = false;
         float bestDistance = float.MaxValue;
-
-        // Cells that are no longer worth offering, collected rather than acted on in place: you
-        // cannot mutate a room's pending set while enumerating it. Same shape as the obstruction
-        // loop's stale list below, which has always pruned - the room loop never did, so a cell that
-        // stopped being diggable was handed out forever and the room could never finish.
-        List<(Room Room, Vector2I Cell, bool Opened)> stalePending = null;
 
         foreach (Room room in rooms)
         {
@@ -171,23 +212,6 @@ public partial class BuildManager : Node2D
 
             foreach (Vector2I candidate in room.PendingDigCells)
             {
-                // Already open, but the room never heard - CellOpened can be missed if the tile was
-                // opened by something other than a dig.
-                if (GridManager.IsTunnel(candidate))
-                {
-                    (stalePending ??= new()).Add((room, candidate, true));
-                    continue;
-                }
-
-                // Turned to something nobody can dig. Lava meeting water leaves stone, and stone
-                // inside a footprint is not the room's any more - exactly as rock that was there
-                // from the start was never the room's.
-                if (!GridManager.CanDig(candidate))
-                {
-                    (stalePending ??= new()).Add((room, candidate, false));
-                    continue;
-                }
-
                 if (claimedDigCells.Contains(candidate))
                 {
                     continue;
@@ -204,17 +228,54 @@ public partial class BuildManager : Node2D
             }
         }
 
-        if (stalePending != null)
-        {
-            RetireStaleRoomCells(stalePending);
-        }
-
         if (found)
         {
             claimedDigCells.Add(cell);
         }
 
         return found;
+    }
+
+    // Cells no room is ever going to get, found and let go.
+    //
+    // Collected rather than acted on in place: you cannot mutate a room's pending set while
+    // enumerating it. Same shape as the obstruction loop's stale list, which has always pruned -
+    // the room loop never did, so a cell that stopped being diggable was handed out forever.
+    private void PruneStaleRoomCells()
+    {
+        List<(Room Room, Vector2I Cell, bool Opened)> stale = null;
+
+        foreach (Room room in rooms)
+        {
+            if (room.State != Room.RoomState.Excavating)
+            {
+                continue;
+            }
+
+            foreach (Vector2I candidate in room.PendingDigCells)
+            {
+                // Already open, but the room never heard - CellOpened can be missed if the tile was
+                // opened by something other than a dig.
+                if (GridManager.IsTunnel(candidate))
+                {
+                    (stale ??= new()).Add((room, candidate, true));
+                    continue;
+                }
+
+                // Turned to something nobody can dig. Lava meeting water leaves stone, and stone
+                // inside a footprint is not the room's any more - exactly as rock that was there
+                // from the start was never the room's.
+                if (!GridManager.CanDig(candidate))
+                {
+                    (stale ??= new()).Add((room, candidate, false));
+                }
+            }
+        }
+
+        if (stale != null)
+        {
+            RetireStaleRoomCells(stale);
+        }
     }
 
 

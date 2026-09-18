@@ -479,6 +479,17 @@ public partial class GridManager : Node2D
 
     // One worker per source: a deposit holds a load or two, so a second ant on it would just walk
     // out there and find nothing left.
+
+    // Forage claims belong to the ants that made them, and those ants are about to be freed.
+    //
+    // RestoreState clears the grid, the food and the dig progress but never this, so every cell a
+    // forager had claimed when the save was loaded stayed claimed for the rest of the session -
+    // and TryFindForageTarget skips claimed cells, so those deposits became permanently invisible
+    // to the whole colony.
+    public void ResetTransientState()
+    {
+        claimedForageCells.Clear();
+    }
     public void ClaimForageCell(Vector2I cell)
     {
         claimedForageCells.Add(cell);

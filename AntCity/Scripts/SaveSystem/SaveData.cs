@@ -12,6 +12,15 @@ public class SaveData
     public CameraSave Camera { get; set; } = new();
     public float QueenX { get; set; }
     public float QueenY { get; set; }
+
+    // Whether she is on the ground yet, and how far through her current clutch. Save during the
+    // founding flight and she used to come back grounded, laying eggs into a burrow nobody dug.
+    //
+    // Defaulted true and deliberately not version-bumped: System.Text.Json leaves an absent property
+    // at its C# default, so every save written before this existed reads back as a grounded queen,
+    // which is what she was. Bumping the version would grey out every one of them in the load menu.
+    public bool QueenGrounded { get; set; } = true;
+    public double QueenLayAccumulator { get; set; }
     public List<AntSave> Ants { get; set; } = new();
     public List<BroodSave> Eggs { get; set; } = new();
     public List<BroodSave> Larvae { get; set; } = new();

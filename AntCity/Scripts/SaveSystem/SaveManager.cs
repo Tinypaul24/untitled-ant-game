@@ -24,10 +24,11 @@ public partial class SaveManager : Node
     private GameClock gameClock;
     private BuildManager buildManager;
     private MaterialWorld materialWorld;
+    private PheromoneField pheromones;
     private SelectionManager selectionManager;
     private ColonyUI colonyUI;
     private Camera2D camera;
-    private Node2D queen;
+    private Queen queen;
 
     public override void _Ready()
     {
@@ -38,10 +39,11 @@ public partial class SaveManager : Node
         gameClock = main.GetNode<GameClock>("GameClock");
         buildManager = main.GetNode<BuildManager>("BuildManager");
         materialWorld = main.GetNode<MaterialWorld>("MaterialWorld");
+        pheromones = main.GetNode<PheromoneField>("PheromoneField");
         selectionManager = main.GetNode<SelectionManager>("SelectionManager");
         colonyUI = main.GetNode<ColonyUI>("UI");
         camera = main.GetNode<Camera2D>("Camera2D");
-        queen = main.GetNode<Node2D>("Queen");
+        queen = main.GetNode<Queen>("Queen");
     }
 
     public override void _UnhandledKeyInput(InputEvent @event)
@@ -290,6 +292,8 @@ public partial class SaveManager : Node
             Camera = new CameraSave { X = camera.Position.X, Y = camera.Position.Y, Zoom = camera.Zoom.X },
             QueenX = queen.Position.X,
             QueenY = queen.Position.Y,
+            QueenGrounded = queen.Grounded,
+            QueenLayAccumulator = queen.LayAccumulator,
             Rooms = buildManager.CaptureRooms(),
             Materials = materialWorld.CaptureState(),
             TimeScale = colonyUI.CurrentSpeed,
@@ -317,7 +321,25 @@ public partial class SaveManager : Node
 
     private void Restore(SaveData data)
     {
+        // Everything that belongs to the world being thrown away, in one place.
+        //
+        // All of it is transient or derived - who claimed what, which walls are being plastered,
+        // where the trails run - so none of it is saved, and until now none of it was cleared
+        // either. It leaked into the loaded world and stayed there: food cells claimed by ants that
+        // no longer exist became permanently invisible, obstruction jobs pointed at coordinates from
+        // a different map and outranked every real room, and the plastering budget was split with
+        // rooms that had been freed.
         selectionManager.ClearAll();
+        buildManager.ResetTransientState();
+        gridManager.ResetTransientState();
+        materialWorld.ResetTransientState();
+        pheromones.ResetTransientState();
+        AntWorker.ResetCounters();
+
+        // Resolved here rather than in _Ready: Main adds this node before it adds ColonyFounding, and
+        // AddChild runs a child ready immediately, so it does not exist yet at that point.
+        main.GetNodeOrNull<ColonyFounding>("ColonyFounding")?.AbortForLoad();
+
         FreeLivingEntities();
 
 
@@ -326,6 +348,11 @@ public partial class SaveManager : Node
         materialWorld.RestoreState(data.Materials);
 
         queen.Position = new Vector2(data.QueenX, data.QueenY);
+        queen.Grounded = data.QueenGrounded;
+        queen.LayAccumulator = data.QueenLayAccumulator;
+
+        // After the terrain is back, because it reads the ground to decide what is blocked.
+        buildManager.SeedDoorstepObstructions();
 
         foreach (AntSave save in data.Ants)
         {

@@ -47,6 +47,15 @@ public partial class PheromoneField : Node2D
 
     public int MarkedCells => trail.Count;
 
+
+    // Trails belong to the world that was walked, not to the colony. Left alone across a load, idle
+    // workers follow routes laid down in a world that no longer exists - out into terrain generated
+    // from different noise.
+    public void ResetTransientState()
+    {
+        trail.Clear();
+        QueueRedraw();
+    }
     public void Deposit(Vector2I cell)
     {
         trail.TryGetValue(cell, out float strength);

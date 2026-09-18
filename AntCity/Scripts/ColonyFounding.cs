@@ -52,6 +52,21 @@ public partial class ColonyFounding : Node
 
     public bool Finished => phase == Phase.Done;
 
+    // Stop founding, without founding.
+    //
+    // A load during the six-second intro used to leave this running: it carried on cutting its
+    // queued shaft into the restored world, teleported the Queen off her restored position, spawned
+    // another set of starting workers on top of the restored population and re-announced the colony
+    // as founded - on a save that might be an hour old.
+    //
+    // Deliberately not FinishFounding, which is what does the spawning and the announcing. This is
+    // "that colony is not being founded any more", not "it finished".
+    public void AbortForLoad()
+    {
+        toDig.Clear();
+        phase = Phase.Done;
+    }
+
     // Skips the arrival and cuts the burrow in one go.
     //
     // For tests and anything else that wants the colony as it is a few seconds in rather than the

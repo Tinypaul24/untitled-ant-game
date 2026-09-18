@@ -205,6 +205,18 @@ public partial class MaterialWorld : Node2D
     private readonly List<Rect2I> cementSites = new();
     private int nextSite;
 
+
+    // Plastering sites belong to rooms that are about to be freed, and the nest square belongs to a
+    // world that is about to be replaced. The sweep spends a fixed budget round-robin across every
+    // registered site, so a stale one does not just sit there - it permanently steals plastering
+    // from the walls that still exist.
+    public void ResetTransientState()
+    {
+        cementSites.Clear();
+        cementHoles.Clear();
+        nestSite = null;
+        nextSite = 0;
+    }
     public void AddCementSite(Rect2I site)
     {
         if (!cementSites.Contains(site))
