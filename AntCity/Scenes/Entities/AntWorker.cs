@@ -408,6 +408,14 @@ public partial class AntWorker : Area2D
     // hole in the floor. ColonyProbe prints this, and it should read zero.
     public static int StallRescues { get; private set; }
 
+    // Both counters are static, so they carry a previous world's totals across a load and the probe
+    // then reports failures belonging to a colony that no longer exists.
+    public static void ResetCounters()
+    {
+        StallRescues = 0;
+        SpoilLeftovers = 0;
+    }
+
     // Last resort. Stranding is a one-way failure in this game, so an ant must never be able to
     // stall permanently on a steering bug - if a leg takes far longer than it possibly should, put
     // her on the waypoint and move on. This is the old teleport, kept as an emergency floor rather
@@ -481,6 +489,22 @@ public partial class AntWorker : Area2D
     // What she is doing, for the colony probe. Reading a private enum through a string keeps the
     // diagnostic from becoming a reason to widen the real state machine.
     public string DebugState => hasDigJob ? "digging" : forageTarget.HasValue ? "foraging" : state.ToString().ToLower();
+
+    // Whether she has stopped having anything to do.
+    //
+    // An ant always has exactly one thing pending: a route in flight, or a timer running. Neither
+    // means she will never act again - no path to follow, no callback queued, nothing to wake her.
+    // She simply stands there for the rest of the game, still eating.
+    //
+    // A diagnostic read of the state machine in the same shape as DebugState, because this failure
+    // is invisible in every harness: the probe counts what ants are doing, and a frozen ant reports
+    // whatever she was doing when she froze.
+    public bool IsStalled =>
+        state != State.Walking
+        && digTimer.IsStopped()
+        && forageTimer.IsStopped()
+        && buildTimer.IsStopped()
+        && wanderTimer.IsStopped();
 
     public void SetSelected(bool selected)
     {

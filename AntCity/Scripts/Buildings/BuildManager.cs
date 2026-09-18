@@ -637,6 +637,12 @@ public partial class BuildManager : Node2D
     [Signal]
     public delegate void RoomSelectedEventHandler(Room room);
 
+    // How much work the job board is holding. Both should return to zero once the colony is idle;
+    // a claim that never clears is a cell no ant will ever be offered again.
+    public int ClaimedDigCellCount => claimedDigCells.Count;
+
+    public int ObstructionCount => obstructions.Count;
+
     public Room RoomAt(Vector2I cell)
     {
         return roomsByCell.TryGetValue(cell, out Room room) ? room : null;

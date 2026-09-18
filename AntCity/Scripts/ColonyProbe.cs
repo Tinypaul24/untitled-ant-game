@@ -186,6 +186,7 @@ public partial class ColonyProbe : Node
     {
         var states = new Dictionary<string, int>();
         int ants = 0;
+        int stalled = 0;
 
         foreach (Node child in main.GetChildren())
         {
@@ -195,6 +196,11 @@ public partial class ColonyProbe : Node
             }
 
             ants++;
+
+            if (worker.IsStalled)
+            {
+                stalled++;
+            }
 
             string state = worker.DebugState;
             states.TryGetValue(state, out int count);
@@ -218,10 +224,10 @@ public partial class ColonyProbe : Node
             }
         }
 
-        GD.Print($"t={elapsed:F0}s  ants={ants}/{colony.Capacity}  food={colony.Food}/{colony.FoodCapacity}  " +
+        GD.Print($"t={elapsed:F0}s  ants={ants}(counted {colony.Ants})/{colony.Capacity}  food={colony.Food}/{colony.FoodCapacity}  " +
                  $"rooms=[{rooms.Trim()}]  " +
                  $"eggs={colony.Egg} larvae={colony.LarvaCount}  upkeep/hr={colony.UpkeepPerHour}  " +
-                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  trail={pheromones.MarkedCells}  farmed={colony.FoodPerHourFarmed}/hr  mound={MoundTiles()}  spoilUnder={SpoilUnderground() - startingSpoilUnderground}  spoilLeft={AntWorker.SpoilLeftovers}  reach={SurfaceCellsCutOff()}of{standableSurface}/{startingCutOff}  nest={grid.GetTileAt(grid.NestCenterCell)}/{(grid.IsStandable(grid.NestCenterCell) ? "stand" : "BLOCKED")}  [{breakdown.Trim()}]");
+                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  stuck={stalled}  claims={build.ClaimedDigCellCount}/{build.ObstructionCount}  trail={pheromones.MarkedCells}  farmed={colony.FoodPerHourFarmed}/hr  mound={MoundTiles()}  spoilUnder={SpoilUnderground() - startingSpoilUnderground}  spoilLeft={AntWorker.SpoilLeftovers}  reach={SurfaceCellsCutOff()}of{standableSurface}/{startingCutOff}  nest={grid.GetTileAt(grid.NestCenterCell)}/{(grid.IsStandable(grid.NestCenterCell) ? "stand" : "BLOCKED")}  [{breakdown.Trim()}]");
     }
 
     // Hauled spoil that has ended up underground, which must be zero.
