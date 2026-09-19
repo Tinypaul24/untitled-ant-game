@@ -6,10 +6,11 @@ public partial class CameraController : Camera2D
 
     // Whole-number zoom only.
     //
-    // It used to step by 0.1 from 0.5, so almost every reachable zoom resampled the art - a 12px
+    // It used to step by 0.1 from 0.5, so almost every reachable zoom resampled the art - a 6px
     // ant drawn at 1.7x lands on fractions of a pixel and the crisp edges the whole art pipeline
-    // exists to preserve turn to mush. At integer zoom every source pixel maps to a whole number
-    // of screen pixels.
+    // exists to preserve turn to mush. It matters more now than it did: a worker is six pixels
+    // across, so there is nothing to spare. At integer zoom every source pixel maps to a whole
+    // number of screen pixels.
     private const int MinZoom = 1;
     private const int MaxZoom = 4;
 
@@ -24,9 +25,13 @@ public partial class CameraController : Camera2D
 
     public override void _Ready()
     {
-        // Two, not one. At zoom 1 a 12px ant on a 640x360 screen is a speck and the 2px material
-        // cells are invisible; at 2 the view is 20x11 tiles and you can actually see what the
-        // colony is doing. Whole numbers only - see MinZoom.
+        // Two, not one. At 2 the view is 20x11 tiles and a 6px worker is twelve screen pixels -
+        // small, which is the point, but still legibly an ant.
+        //
+        // Zoom 1 used to be useless: a 12px ant was a speck and there was no reason to go there.
+        // Now that a worker is half that and a corridor is two tiles tall, 1 is the colony view -
+        // 40x22 tiles, where you stop watching individuals and start watching traffic. Whole
+        // numbers only - see MinZoom.
         Zoom = new Vector2(2, 2);
         panPosition = Position;
     }

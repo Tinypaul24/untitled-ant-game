@@ -700,7 +700,7 @@ public partial class MaterialWorld : Node2D
 
     // ---- terrain generation -----------------------------------------------------------------
 
-    // Every cell of a tile gets the tile's material, so a 4x4 block of cells is one flat substance.
+    // Every cell of a tile gets the tile's material, so an 8x8 block of cells is one flat substance.
     // This is why painting terrain per cell still looked blocky: the cells were never given anything
     // to say that the tile had not already said.
     private void FillChunkFromTiles(MaterialChunk chunk)
@@ -789,7 +789,7 @@ public partial class MaterialWorld : Node2D
         return MaterialDatabase.Get(GetMaterialAt(worldPosition)).Kind == MaterialKind.Liquid;
     }
 
-    // Clears the 4x4 block of cells behind one gameplay tile. This is what digging calls.
+    // Clears the 8x8 block of cells behind one gameplay tile. This is what digging calls.
     public void ClearTile(Vector2I tile)
     {
         Vector2I origin = TileToCellOrigin(tile);
@@ -957,8 +957,6 @@ public partial class MaterialWorld : Node2D
     // matter behind it - and because every write wakes its neighbours, sand above a fresh tunnel
     // collapses into it and liquids run in without anything having to ask them to.
 
-    // An even scatter, so a tile chipped a quarter at a time erodes all over rather than from one
-    // corner. Ordered-dither indices into the 4x4 block.
     // The order cells of a tile are chipped away in, so a half-dug tile has its material spread
     // evenly rather than cleared from one corner.
     //

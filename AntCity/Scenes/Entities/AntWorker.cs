@@ -41,8 +41,8 @@ public partial class AntWorker : Area2D
     private const int WanderCellRadius = 3;
     private const double MinWanderPause = 1.0;
     private const double MaxWanderPause = 3.0;
-    // Clear of a 12px body rather than cutting through it.
-    private const float SelectionRingRadius = 8f;
+    // Clear of a 6px body rather than cutting through it.
+    private const float SelectionRingRadius = 5f;
     private const float ForageSeconds = 1f;
     private const int ForageCarryCapacity = 10;
     private const int HarvestPerTick = 2;
@@ -62,36 +62,36 @@ public partial class AntWorker : Area2D
     private const double HazardCheckSeconds = 0.25;
     // How close something harmful has to get before she drops everything and moves.
     private const int HazardReactionCells = 1;
-    // Out at the mandibles of a 12px body, so a carried load sits in front of her rather than on
+    // Out at the mandibles of a 6px body, so a carried load sits in front of her rather than on
     // top of her.
-    private const float MouthOffset = 8f;
-    private const float CarriedSpeckSize = 2f;
+    private const float MouthOffset = 4f;
+    private const float CarriedSpeckSize = 1f;
 
     // How far she wanders off her own line, and how often. Wavelength is in world pixels travelled
     // rather than in seconds, so a worker slowed by a load weaves the same shape more slowly instead
     // of weaving a different shape. A real ant does not walk a ruled line and neither should she.
-    private const float WeaveAmplitude = 1.25f;
+    private const float WeaveAmplitude = 0.75f;
     private const float WeaveWavelength = 14f;
 
     // Two ants meeting stop and touch antennae. It is the single most recognisable thing ants do,
     // it costs a third of a second, and it is what turns a corridor of traffic into a colony.
-    private const float AntennationRange = 7f;
+    private const float AntennationRange = 4f;
     private const double AntennationSeconds = 0.35;
     // Long enough that a crowded nest does not become a standing ovation.
     private const double AntennationCooldownSeconds = 4.0;
 
     // Every part of her is drawn this far below the point the game thinks she occupies.
     //
-    // Navigation works in tiles and puts her at the centre of one, so her feet hung two pixels clear
-    // of the floor she was supposed to be standing on. Now that a bored tunnel keeps a ragged
-    // ceiling, that same two pixels is also the difference between her antennae brushing the roof
-    // and her head being buried in it.
+    // Navigation works in tiles and puts her at the centre of one, so without this her feet hang in
+    // the middle of the tile rather than on its floor. The offset is always half a tile less half a
+    // body - eight pixels less three - so it has to move whenever the sprite is resized. It was 2
+    // for the old twelve-pixel worker and is 5 for this one.
     //
     // A render offset, never a change to Position: WorldToCell(Position) is the "which tile am I in"
-    // oracle at fifteen call sites and in the tests, and shifting her by eight pixels of floor could
-    // push that answer across a tile boundary - at which point TryDigOut sees solid ground and she
-    // digs the floor out from under herself.
-    private static readonly Vector2 BodyOffset = new Vector2(0f, 2f);
+    // oracle at fifteen call sites and in the tests, and shifting her by a whole floor's worth of
+    // pixels could push that answer across a tile boundary - at which point TryDigOut sees solid
+    // ground and she digs the floor out from under herself.
+    private static readonly Vector2 BodyOffset = new Vector2(0f, 5f);
 
     private static readonly Color SelectionRingColor = new Color(1f, 1f, 0.4f);
 
@@ -196,6 +196,10 @@ public partial class AntWorker : Area2D
         // Drawn slightly low so she stands on the floor rather than hovering over it, and each ant
         // a little differently so a file of them does not read as one sprite repeated.
         paceScale = (float)GD.RandRange(0.9, 1.1);
+        // Unchanged at half the body size, deliberately. This is a vertical offset on something
+        // standing on a floor, so it is a spread in absolute pixels, not a fraction of the ant -
+        // widening it to match the smaller sprite just buries her ankles in the ground. Three
+        // pixels of band across a 6px worker is already twice the relative spread it used to be.
         laneOffset = (float)GD.RandRange(-1.5, 1.5);
         weavePhase = GD.RandRange(0.0, Mathf.Tau);
 

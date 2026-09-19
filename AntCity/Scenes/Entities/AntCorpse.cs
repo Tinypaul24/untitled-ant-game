@@ -25,9 +25,9 @@ public partial class AntCorpse : Node2D
 
     private static readonly Texture2D Texture = GD.Load<Texture2D>("res://AntCity/Textures/Red Ant Down.svg");
 
-    // Drained of colour and turned over. At twelve pixels there is no room for a distinct corpse
-    // sprite, but a worker lying on her back in muted brown reads as dead at a glance and never
-    // reads as a live ant facing away.
+    // Drained of colour and turned over. At six pixels there is certainly no room for a distinct
+    // corpse sprite, but a worker lying on her back in muted brown reads as dead at a glance and
+    // never reads as a live ant facing away.
     private static readonly Color DeadTint = new Color(0.45f, 0.38f, 0.34f);
 
     private GridManager grid;
