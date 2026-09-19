@@ -423,6 +423,7 @@ public partial class AntWorker : Area2D
         StallRescues = 0;
         SpoilLeftovers = 0;
         IdleStallRescues = 0;
+        HaulTrips = 0;
     }
 
     // Last resort. Stranding is a one-way failure in this game, so an ant must never be able to
@@ -1403,6 +1404,10 @@ public partial class AntWorker : Area2D
 
         List<Vector2I> route = gridManager.FindTunnelPath(current, dropOff) ?? new List<Vector2I> { current };
 
+        // Counted here rather than at the top of the method, so a load that had nowhere viable to
+        // go and carried on working is not recorded as a trip that never happened.
+        HaulTrips++;
+
         FollowPath(route, () =>
         {
             Vector2I arrived = gridManager.WorldToCell(Position);
@@ -1434,6 +1439,13 @@ public partial class AntWorker : Area2D
     // StallRescues: a colony quietly failing to dispose of its own spoil should show up as a number
     // somebody can read, not as a hill that mysteriously stops growing. It should be zero.
     public static int SpoilLeftovers { get; private set; }
+
+    // How many times a worker has broken off to carry a load up to the surface.
+    //
+    // Currently close to meaningless, which is the point of measuring it: HaulCapacityGrains is
+    // three whole tiles, so a digger opens an entire stretch of corridor before she ever has to
+    // walk one out. Hauling nobody can see is hauling that may as well not be simulated.
+    public static int HaulTrips { get; private set; }
 
     // Re-enters whichever job was interrupted for a haul trip, by target rather than by raw callback,
     // since the ant is now standing at the dump and needs a fresh route back to the dig front.
