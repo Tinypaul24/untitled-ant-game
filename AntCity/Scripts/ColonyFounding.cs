@@ -187,9 +187,23 @@ public partial class ColonyFounding : Node
     {
         Vector2I surface = grid.NestCenterCell;
 
+        // Two tiles tall, like every corridor the workers will cut after her. Headroom before
+        // floor, for the same reason the chamber below does it in that order: a shaft that opens
+        // its floor first is briefly a sealed pocket.
         for (int step = 1; step <= ShaftDepth; step++)
         {
-            toDig.Enqueue(surface + new Vector2I(step, step));
+            Vector2I tread = surface + new Vector2I(step, step);
+
+            // Same rule the workers dig by. It refuses the top treads, whose roof would be the
+            // lawn beside her own front door, so the shaft runs low for its first couple of steps
+            // and opens up once it is clear of the surface - which is what a real burrow entrance
+            // does anyway.
+            if (grid.ShouldOpenHeadroom(tread))
+            {
+                toDig.Enqueue(tread + new Vector2I(0, -1));
+            }
+
+            toDig.Enqueue(tread);
         }
 
         Vector2I floor = surface + new Vector2I(ShaftDepth, ShaftDepth);

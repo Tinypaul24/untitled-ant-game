@@ -463,6 +463,43 @@ public partial class GridManager : Node2D
         return false;
     }
 
+    // Whether the tile above a freshly opened corridor cell should be taken out too.
+    //
+    // Corridors are cut two tiles tall, and the roof is the second cut. It is deliberately not part
+    // of PlanDigRoute's output: every cell that planner returns has to be standable once carved,
+    // and a roof by definition is not - it has open floor beneath it. So the planner lays out the
+    // floor and only the floor, and this decides, one cell at a time, whether that floor gets
+    // headroom. Keeping it here rather than on the digger is what lets the founding queen, a
+    // worker and the tests all cut corridors of the same shape.
+    //
+    // Three refusals, and none of them is a new rule:
+    //
+    // The roof must be underground, and SurfaceHeight is the first row that is - the row above it
+    // is the turf. Grass is walkable, so the lawn IS the surface walkway; cutting headroom into it
+    // takes the floor out from under the ground the foragers cross, and higher still it would eat
+    // the colony's own spoil hill from the inside.
+    //
+    // Undermining is PlanDigRoute's own guard restated. Opening the roof makes the cell above it
+    // unstandable, and anything standing there is then standing on nothing.
+    //
+    // And headroom is not worth cutting through lava for.
+    public bool ShouldOpenHeadroom(Vector2I floorCell)
+    {
+        Vector2I roof = floorCell + new Vector2I(0, -1);
+
+        if (roof.Y < SurfaceHeight)
+        {
+            return false;
+        }
+
+        if (!CanDig(roof) || IsHazardous(roof))
+        {
+            return false;
+        }
+
+        return !IsStandable(roof + new Vector2I(0, -1));
+    }
+
     public static bool IsWithinReach(Vector2I a, Vector2I b)
     {
         return Mathf.Max(Mathf.Abs(a.X - b.X), Mathf.Abs(a.Y - b.Y)) <= 1;

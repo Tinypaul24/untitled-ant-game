@@ -53,9 +53,20 @@ public partial class AntWorker : Area2D
     // there. Eight tiles is roughly what she could plausibly find by casting about, and everything
     // beyond it she has to be led to by somebody else's trail.
     private const int ForageSightTiles = 8;
-    // Each dig tick scrapes out a share of the cell; a full load is three cells worth, matching the old haul cadence.
+    // Each dig tick scrapes out a share of the cell.
     private const int GrainsPerDigTick = MaterialWorld.CellsPerTile / GridManager.GrainsPerCell;
-    private const int HaulCapacityGrains = MaterialWorld.CellsPerTile * 3;
+
+    // A load is exactly one step of corridor: the floor cell and the roof above it.
+    //
+    // It used to be three whole tiles, which meant a digger opened a long stretch of tunnel before
+    // she ever had to walk any of it out - the baseline was one trip per seven tiles dug, so the
+    // hauling may as well not have been simulated. Two tiles is the natural unit now that a
+    // corridor is cut two tiles tall: cut a step, fill up, carry it out, come back.
+    //
+    // It also has to be at least two tiles for the roof to get cut at all. At one tile a digger is
+    // full the instant the floor cell opens, so she would leave for the surface every time and the
+    // headroom would never be carved.
+    private const int HaulCapacityGrains = MaterialWorld.CellsPerTile * 2;
     private const int MaxCarriedSpecksDrawn = 6;
     private const int CarriedSpecksPerRow = 3;
     // How often a worker checks the ground under her for danger.
@@ -169,6 +180,10 @@ public partial class AntWorker : Area2D
     private Vector2I digTarget;
     private bool hasDigJob;
     private Vector2I pendingDigCell;
+
+    // Set while she is cutting the roof above a floor cell she has just opened, so she cuts exactly
+    // one roof per floor and does not climb the shaft carving upward forever.
+    private bool diggingHeadroom;
     private Action pendingDigCallback;
     private double hazardCheckTimer;
     private Vector2I lastTrailCell = new Vector2I(int.MinValue, int.MinValue);
@@ -854,6 +869,7 @@ public partial class AntWorker : Area2D
         wanderTimer.Stop();
 
         pendingDigCallback = null;
+        diggingHeadroom = false;
         state = State.Idle;
 
         velocity = Vector2.Zero;
@@ -1354,6 +1370,33 @@ public partial class AntWorker : Area2D
         // Cell is through: scoop up whatever slumped into the new opening. Nothing is piled at her
         // feet any more, so there is no heap there to collect.
         ScoopUpLooseGrains(dugCell);
+
+        // A corridor is cut two tiles tall, and the roof is a second carve rather than a second
+        // route cell. PlanDigRoute plans the floor and only the floor: every cell it returns has to
+        // be standable once carved, which the roof by definition is not. So this is the one place
+        // that decides a floor cell gets headroom, and ShouldOpenHeadroom reuses the planner's own
+        // rules to decide it.
+        //
+        // The load check comes first because OnDigTimeout must never begin a tick already full -
+        // the grain loop stops collecting at capacity while OnTileChipped clears the cell anyway,
+        // and that is matter quietly ceasing to exist. A digger who fills up on the floor cell
+        // hauls, and that step of corridor keeps its low ceiling. Occasional, and a corridor that
+        // pinches here and there looks more like a burrow than a extruded box does.
+        if (!diggingHeadroom
+            && dugCell != digTarget
+            && carriedGrains.Count < HaulCapacityGrains
+            && gridManager.ShouldOpenHeadroom(dugCell))
+        {
+            diggingHeadroom = true;
+            pendingDigCell = dugCell + new Vector2I(0, -1);
+            pendingDigCallback = callback;
+            state = State.Digging;
+            digTimer.Start();
+
+            return;
+        }
+
+        diggingHeadroom = false;
 
         // A full load gets hauled out immediately, mid-corridor, rather than waiting for the whole dig job to finish.
         Action next = carriedGrains.Count >= HaulCapacityGrains

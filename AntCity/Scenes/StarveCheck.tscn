@@ -7,3 +7,8 @@
 script = ExtResource("2_starve")
 
 [node name="Main" parent="." instance=ExtResource("1_main")]
+
+[editable path="Main"]
+
+[node name="GridManager" parent="Main" index="1"]
+Seed = 20260913

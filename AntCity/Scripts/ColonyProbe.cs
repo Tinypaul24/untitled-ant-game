@@ -227,7 +227,7 @@ public partial class ColonyProbe : Node
         GD.Print($"t={elapsed:F0}s  ants={ants}(counted {colony.Ants})/{colony.Capacity}  food={colony.Food}/{colony.FoodCapacity}  " +
                  $"rooms=[{rooms.Trim()}]  " +
                  $"eggs={colony.Egg} larvae={colony.LarvaCount}  upkeep/hr={colony.UpkeepPerHour}  " +
-                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  stuck={stalled}/{AntWorker.IdleStallRescues}  claims={build.ClaimedDigCellCount}/{build.ObstructionCount}  trail={pheromones.MarkedCells}  farmed={colony.FoodPerHourFarmed}/hr  mound={MoundTiles()}  spoilUnder={SpoilUnderground() - startingSpoilUnderground}  spoilLeft={AntWorker.SpoilLeftovers}  hauls={AntWorker.HaulTrips}  reach={SurfaceCellsCutOff()}of{standableSurface}/{startingCutOff}  nest={grid.GetTileAt(grid.NestCenterCell)}/{(grid.IsStandable(grid.NestCenterCell) ? "stand" : "BLOCKED")}  [{breakdown.Trim()}]");
+                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  stuck={stalled}/{AntWorker.IdleStallRescues}  claims={build.ClaimedDigCellCount}/{build.ObstructionCount}  trail={pheromones.MarkedCells}  farmed={colony.FoodPerHourFarmed}/hr  mound={MoundTiles()}  spoilUnder={SpoilUnderground() - startingSpoilUnderground}  spoilLeft={AntWorker.SpoilLeftovers}  hauls={AntWorker.HaulTrips}  reach={SurfaceCellsCutOff()}of{standableSurface}/{startingCutOff}  surf=[{SurfaceProfile()}]  nest={grid.GetTileAt(grid.NestCenterCell)}/{(grid.IsStandable(grid.NestCenterCell) ? "stand" : "BLOCKED")}  [{breakdown.Trim()}]");
     }
 
     // Hauled spoil that has ended up underground, which must be zero.
@@ -315,6 +315,33 @@ public partial class ColonyProbe : Node
         }
 
         return reaching;
+    }
+
+    // The surface walkway, one character per column, beside the count of it.
+    //
+    // reach= says how many surface cells can still reach the nest, and a falling count could mean
+    // a hole, a hill, or the far lawn quietly detaching - three different problems that need three
+    // different fixes. This says which. It turned an afternoon of theorising about the spoil mound
+    // into one look: the hill grows two tiles proud at a choke point, which is steeper than the 45
+    // degrees an ant can climb, and the lawn beyond it detaches until the pile slumps.
+    //
+    // '.' unstandable - buried, or undermined. 'o' standable and connected to the nest. 'X'
+    // standable but cut off from it.
+    private string SurfaceProfile()
+    {
+        var sb = new System.Text.StringBuilder();
+        Vector2I nest = grid.NestCenterCell;
+        int row = grid.SurfaceHeight - grid.GrassDepth;
+
+        for (int x = nest.X - 20; x <= nest.X + 20; x++)
+        {
+            Vector2I cell = new Vector2I(x, row);
+
+            sb.Append(!grid.IsStandable(cell) ? '.'
+                : grid.FindTunnelPath(cell, nest) != null ? 'o' : 'X');
+        }
+
+        return sb.ToString();
     }
 
     // Open ground near the colony, as a proxy for "has anything been excavated".

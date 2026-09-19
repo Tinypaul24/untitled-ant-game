@@ -51,6 +51,7 @@ public partial class TerrainTests : Node
         SmoothedRoutesStayWalkable();
         RoutesDoNotBobUpAndDown();
         DugCorridorsStayWalkable();
+        CorridorsAreCutTwoTilesTall();
         SaveRoundTripRebuildsTheWorld();
 
         GD.Print($"--- {passed} passed, {failed} failed ---");
@@ -195,6 +196,92 @@ public partial class TerrainTests : Node
         return total;
     }
 
+
+    // A corridor is cut two tiles tall, and still behaves like a corridor afterwards.
+    //
+    // The shape matters as much as the fact of it. A stacked pair must come out as one cavity with
+    // a single ragged lip on top, not as two boxes with a slab of earth floating between them -
+    // that slab is the "small squares in the tunnel" this game has had before. MaterialWorld
+    // already handles that case, and this is what pins it to the way corridors are now dug.
+    private void CorridorsAreCutTwoTilesTall()
+    {
+        Vector2I nest = grid.NestCenterCell;
+        Vector2I target = FindDiggableNear(nest + new Vector2I(14, 20));
+        List<Vector2I> plan = grid.PlanDigRoute(nest, target);
+
+        if (plan == null)
+        {
+            Check(false, "a deep corridor can be planned");
+            return;
+        }
+
+        var roofed = new List<Vector2I>();
+        Vector2I cursor = nest;
+
+        // Exactly what OnDigTimeout does: open the floor cell, then ask whether it gets headroom.
+        // Asking before the floor is open would be asking a different question.
+        foreach (Vector2I cell in plan)
+        {
+            grid.Dig(cell);
+
+            if (grid.ShouldOpenHeadroom(cell))
+            {
+                grid.Dig(cell + new Vector2I(0, -1));
+                roofed.Add(cell);
+            }
+
+            if (grid.IsStandable(cell))
+            {
+                cursor = cell;
+            }
+        }
+
+        // Derived, not settled. The question here is the shape the bore leaves behind; stepping the
+        // simulation first lets loose earth slump into the cavity, and soil lying on the floor of a
+        // corridor is the simulation working, not a slab hanging from its ceiling.
+        materials.DeriveDirtyTiles();
+
+        Check(roofed.Count > 0, "a corridor run gets headroom at all", $"{roofed.Count} of {plan.Count} cells roofed");
+
+        if (roofed.Count == 0)
+        {
+            return;
+        }
+
+        int unstandableFloor = 0;
+        int standableRoof = 0;
+        int slabsLeftHanging = 0;
+
+        foreach (Vector2I floor in roofed)
+        {
+            Vector2I roof = floor + new Vector2I(0, -1);
+
+            // She walks the floor; the roof is headroom and nothing should ever stand in it.
+            if (!grid.IsStandable(floor))
+            {
+                unstandableFloor++;
+            }
+
+            if (grid.IsStandable(roof))
+            {
+                standableRoof++;
+            }
+
+            // The lip belongs on top of the cavity, not in the middle of it. Counted the same way
+            // BoredTunnelsLeaveNothingHanging counts it - the ceiling rows alone - because earth
+            // left up there with an open roof above it is a slab floating in the corridor.
+            slabsLeftHanging += CountSolidCells(floor) - CountSolidCells(floor, MaterialWorld.MaxCeilingCellRows);
+        }
+
+        Check(unstandableFloor == 0, "every roofed corridor cell is still standable", $"{unstandableFloor} were not");
+        Check(standableRoof == 0, "nothing stands in the headroom", $"{standableRoof} roof cells were standable");
+        Check(slabsLeftHanging == 0, "no slab is left hanging inside a two-tall corridor", $"{slabsLeftHanging} cells");
+
+        // And the whole point: taking the roof off must not have stranded the digger who cut it.
+        Check(grid.IsStandable(cursor), "the digger ends a two-tall corridor on solid footing");
+        Check(grid.FindTunnelPath(cursor, grid.FindNearestSurfaceStanding(cursor, 8)) != null,
+            "a two-tall corridor still leads home");
+    }
 
     private void DugCorridorsStayWalkable()
     {
