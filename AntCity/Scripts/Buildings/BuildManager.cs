@@ -57,6 +57,160 @@ public partial class BuildManager : Node2D
 
     public bool IsPlacing => pendingType.HasValue;
 
+    // Tunnels the player has drawn, and the order they want them in.
+    //
+    // Structurally this is a third obstruction set: a bag of cells that idle diggers work through,
+    // with its own place in the priority order. The difference is who put the cells there. Until
+    // now the shape of a nest was emergent - ants dug toward whatever chamber was nearest and the
+    // corridors between them were whatever the router happened to produce - so the one thing this
+    // genre is actually about, laying out your own burrow, was the one thing the player could not
+    // do.
+    //
+    // The value is the batch a cell was drawn in. Lower batches are dug first, so "this tunnel
+    // before that one" is just the order you drew them in, and no priority UI is needed to express
+    // the only priority question anybody actually has.
+    private readonly Dictionary<Vector2I, int> designations = new();
+
+    private int nextDigBatch;
+    private bool isMarking;
+
+    public bool IsMarking => isMarking;
+
+    public int DesignationCount => designations.Count;
+
+    public bool IsDesignated(Vector2I cell) => designations.ContainsKey(cell);
+
+    public void BeginMarking()
+    {
+        CancelPlacement();
+        isMarking = true;
+    }
+
+    public void CancelMarking()
+    {
+        isMarking = false;
+        isDragging = false;
+        QueueRedraw();
+    }
+
+    // Everything diggable in the rectangle joins one batch.
+    private void MarkForDigging(Rect2I area)
+    {
+        int batch = nextDigBatch++;
+        int added = 0;
+
+        for (int x = area.Position.X; x < area.Position.X + area.Size.X; x++)
+        {
+            for (int y = area.Position.Y; y < area.Position.Y + area.Size.Y; y++)
+            {
+                var cell = new Vector2I(x, y);
+
+                if (!GridManager.CanDig(cell) || designations.ContainsKey(cell))
+                {
+                    continue;
+                }
+
+                designations[cell] = batch;
+                added++;
+            }
+        }
+
+        if (added == 0)
+        {
+            ColonyManager.RaiseAlert("Nothing to dig there - that ground is already open, or it is rock.");
+        }
+
+        QueueRedraw();
+    }
+
+    // What the player has marked but not yet dug, so it survives a save/load instead of quietly
+    // vanishing - the whole point of drawing a tunnel is that it is a standing instruction, and
+    // ResetTransientState wipes the live dictionary on every load same as it does claimedDigCells.
+    public List<int> CaptureDesignations()
+    {
+        var saves = new List<int>();
+
+        foreach (KeyValuePair<Vector2I, int> entry in designations)
+        {
+            saves.AddCell(entry.Key, entry.Value);
+        }
+
+        return saves;
+    }
+
+    public void RestoreDesignations(List<int> saves)
+    {
+        designations.Clear();
+
+        foreach ((Vector2I cell, int batch) in saves.ReadCellValues())
+        {
+            // Ground that stopped being diggable while the save sat on disk - built over, or turned
+            // to rock by something else since.
+            if (!GridManager.CanDig(cell))
+            {
+                continue;
+            }
+
+            designations[cell] = batch;
+            nextDigBatch = Mathf.Max(nextDigBatch, batch + 1);
+        }
+
+        QueueRedraw();
+    }
+
+    // Marked ground, oldest batch first and nearest within a batch.
+    private bool TryClaimDesignation(Vector2 fromPosition, out Vector2I cell)
+    {
+        cell = default;
+
+        bool found = false;
+        int bestBatch = int.MaxValue;
+        float bestDistance = float.MaxValue;
+        List<Vector2I> stale = null;
+
+        foreach (KeyValuePair<Vector2I, int> entry in designations)
+        {
+            // Somebody else got there, or it turned to rock while it was queued.
+            if (!GridManager.CanDig(entry.Key))
+            {
+                (stale ??= new List<Vector2I>()).Add(entry.Key);
+                continue;
+            }
+
+            if (IsFullyManned(entry.Key))
+            {
+                continue;
+            }
+
+            float distance = GridManager.CellToWorld(entry.Key).DistanceSquaredTo(fromPosition);
+
+            if (entry.Value > bestBatch || (entry.Value == bestBatch && distance >= bestDistance))
+            {
+                continue;
+            }
+
+            bestBatch = entry.Value;
+            bestDistance = distance;
+            cell = entry.Key;
+            found = true;
+        }
+
+        if (stale != null)
+        {
+            foreach (Vector2I gone in stale)
+            {
+                designations.Remove(gone);
+            }
+        }
+
+        if (found)
+        {
+            Claim(cell);
+        }
+
+        return found;
+    }
+
 
     [Export]
     public MaterialWorld MaterialWorld { get; set; }
@@ -98,6 +252,8 @@ public partial class BuildManager : Node2D
 
         claimedDigCells.Clear();
         obstructions.Clear();
+        designations.Clear();
+        isMarking = false;
     }
 
     // Obstructions only ever come from a walkable-to-blocked transition, and a load produces no
@@ -230,6 +386,12 @@ public partial class BuildManager : Node2D
     public bool TryClaimRoomDigJob(Vector2 fromPosition, out Vector2I cell)
     {
         PruneStaleRoomCells();
+
+        // What the player drew comes before what the game worked out for itself.
+        if (TryClaimDesignation(fromPosition, out cell))
+        {
+            return true;
+        }
 
         cell = default;
         bool found = false;
@@ -623,6 +785,12 @@ public partial class BuildManager : Node2D
 
     public override void _UnhandledInput(InputEvent @event)
     {
+        if (isMarking)
+        {
+            HandleMarkingInput(@event);
+            return;
+        }
+
         if (!IsPlacing)
         {
             // Unhandled, so an ant under the cursor has already taken the click - selecting a
@@ -694,8 +862,39 @@ public partial class BuildManager : Node2D
     // Now it shows the room and its wall: every cell of the footprint tinted by what it actually
     // is, and the one-tile ring drawn in the colour the finished wall will be, so the preview is a
     // picture of the chamber rather than a box.
+    private static readonly Color DesignationTint = new Color(1f, 0.85f, 0.35f, 0.30f);
+    private static readonly Color MarkingTint = new Color(1f, 0.95f, 0.6f, 0.45f);
+
     public override void _Draw()
     {
+        // Marked ground stays visible whatever mode the player is in, because it is a standing
+        // instruction rather than a preview - the point of drawing a tunnel is to be able to see
+        // afterwards what you asked for and how much of it is left.
+        int cellSize = GridManager.CellSize;
+
+        foreach (Vector2I cell in designations.Keys)
+        {
+            DrawRect(new Rect2(cell.X * cellSize, cell.Y * cellSize, cellSize, cellSize), DesignationTint);
+        }
+
+        if (isMarking)
+        {
+            if (isDragging)
+            {
+                Rect2I area = ComputeFootprint(dragStart, dragCurrent);
+
+                DrawRect(
+                    new Rect2(
+                        area.Position.X * cellSize,
+                        area.Position.Y * cellSize,
+                        area.Size.X * cellSize,
+                        area.Size.Y * cellSize),
+                    MarkingTint);
+            }
+
+            return;
+        }
+
         if (!IsPlacing)
         {
             return;
@@ -752,6 +951,7 @@ public partial class BuildManager : Node2D
     {
         claimedDigCells.Remove(cell);
         obstructions.Remove(cell);
+        designations.Remove(cell);
 
         if (!roomsByCell.TryGetValue(cell, out Room room) || room.State != Room.RoomState.Excavating)
         {
@@ -1011,6 +1211,51 @@ public partial class BuildManager : Node2D
             case BuildingType.RoyalChamber:
                 ColonyManager.AddRoyalChamber(-cells);
                 break;
+        }
+    }
+
+    // Drag out a run of tunnel. The same gesture as placing a room, deliberately - it is the same
+    // question being asked of the same grid, and a second idiom for it would be a second thing to
+    // learn.
+    private void HandleMarkingInput(InputEvent @event)
+    {
+        if (@event is InputEventMouseButton mouseButton)
+        {
+            if (mouseButton.ButtonIndex == MouseButton.Left)
+            {
+                if (mouseButton.Pressed)
+                {
+                    isDragging = true;
+                    dragStart = GetGlobalMousePosition();
+                    dragCurrent = dragStart;
+                }
+                else if (isDragging)
+                {
+                    isDragging = false;
+                    MarkForDigging(ComputeFootprint(dragStart, dragCurrent));
+                }
+
+                GetViewport().SetInputAsHandled();
+            }
+            else if (mouseButton.ButtonIndex == MouseButton.Right && mouseButton.Pressed)
+            {
+                CancelMarking();
+                GetViewport().SetInputAsHandled();
+            }
+
+            return;
+        }
+
+        if (@event is InputEventMouseMotion motion)
+        {
+            hoverPosition = GetGlobalMousePosition();
+
+            if (isDragging)
+            {
+                dragCurrent = hoverPosition;
+            }
+
+            QueueRedraw();
         }
     }
 

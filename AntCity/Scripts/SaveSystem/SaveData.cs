@@ -25,6 +25,11 @@ public class SaveData
     public List<BroodSave> Eggs { get; set; } = new();
     public List<BroodSave> Larvae { get; set; } = new();
     public List<RoomSave> Rooms { get; set; } = new();
+
+    // Cell X, cell Y, batch, repeating - the same packing AddCell/ReadCellValues already use for
+    // grid data. Absent in every save written before the dig tool existed, which reads back as no
+    // designations, correctly.
+    public List<int> Designations { get; set; } = new();
     public MaterialSave Materials { get; set; } = new();
     public float TimeScale { get; set; } = 1f;
     public bool Paused { get; set; }

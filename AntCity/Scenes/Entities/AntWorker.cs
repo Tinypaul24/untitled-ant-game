@@ -1477,6 +1477,9 @@ public partial class AntWorker : Area2D
     {
         // Read the material before the cell can flip to open tunnel on the final tick.
         MaterialId material = materialWorld.SpoilFor(pendingDigCell);
+
+        // Asked before the cell opens, because opening it retires the designation.
+        bool drawnByThePlayer = buildManager.IsDesignated(pendingDigCell);
         Vector2I standingCell = gridManager.WorldToCell(Position);
 
         bool cellOpened = gridManager.DigGrain(pendingDigCell);
@@ -1538,8 +1541,12 @@ public partial class AntWorker : Area2D
         // and that is matter quietly ceasing to exist. A digger who fills up on the floor cell
         // hauls, and that step of corridor keeps its low ceiling. Occasional, and a corridor that
         // pinches here and there looks more like a burrow than a extruded box does.
+        // A cell the player drew is a tunnel and gets headroom even though it is her dig target;
+        // a room cell is a room and does not, because the room owns its own footprint. Otherwise
+        // the rule is "corridor cells on the way somewhere", which is every route cell but not the
+        // destination.
         if (!diggingHeadroom
-            && dugCell != digTarget
+            && (dugCell != digTarget || drawnByThePlayer)
             && carriedGrains.Count < HaulCapacityGrains
             && gridManager.ShouldOpenHeadroom(dugCell))
         {

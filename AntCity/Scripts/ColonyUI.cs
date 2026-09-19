@@ -36,6 +36,7 @@ public partial class ColonyUI : CanvasLayer
     private PanelContainer previewPanel;
     private Label previewLabel;
 
+    private Button digButton;
     private Button colonyButton;
     private Control colonyPanel;
     private Label workDetail;
@@ -101,6 +102,7 @@ public partial class ColonyUI : CanvasLayer
         previewPanel = GetNode<PanelContainer>("ThemeRoot/PreviewPanel");
         previewLabel = GetNode<Label>("ThemeRoot/PreviewPanel/PreviewLabel");
 
+        digButton = GetNode<Button>("ThemeRoot/BottomBar/Actions/DigButton");
         colonyButton = GetNode<Button>("ThemeRoot/BottomBar/Actions/ColonyButton");
         colonyPanel = GetNode<Control>("ThemeRoot/ColonyPanel");
         workDetail = GetNode<Label>("ThemeRoot/ColonyPanel/ColonyBox/WorkDetail");
@@ -144,6 +146,22 @@ public partial class ColonyUI : CanvasLayer
         pauseButton.Toggled += OnPauseToggled;
 
         // Toggle the build tray, and start placement when a building is chosen.
+        // Marking and placing both swallow left clicks, so they cannot both be armed. Turning one
+        // on turns the other off, and the button reflects it - the alternative is the player
+        // wondering why the world has stopped responding, which this game has shipped once already.
+        digButton.Toggled += pressed =>
+        {
+            if (pressed)
+            {
+                buildManager.BeginMarking();
+                buildTray.Visible = false;
+            }
+            else
+            {
+                buildManager.CancelMarking();
+            }
+        };
+
         colonyButton.Toggled += pressed => colonyPanel.Visible = pressed;
 
         // The colony's one real allocation decision. Diggers are the remainder, so there is nothing
@@ -260,7 +278,14 @@ public partial class ColonyUI : CanvasLayer
     {
         buildTray.Visible = !buildTray.Visible;
 
-        if (!buildTray.Visible)
+        if (buildTray.Visible)
+        {
+            // Opening the build tray disarms the dig tool, for the same reason the dig tool closes
+            // the tray: two tools that both eat left clicks, one cursor.
+            digButton.SetPressedNoSignal(false);
+            buildManager.CancelMarking();
+        }
+        else
         {
             buildManager.CancelPlacement();
         }

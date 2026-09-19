@@ -304,6 +304,7 @@ public partial class SaveManager : Node
             QueenGrounded = queen.Grounded,
             QueenLayAccumulator = queen.LayAccumulator,
             Rooms = buildManager.CaptureRooms(),
+            Designations = buildManager.CaptureDesignations(),
             Materials = materialWorld.CaptureState(),
             TimeScale = colonyUI.CurrentSpeed,
             Paused = colonyUI.IsPaused,
@@ -354,6 +355,7 @@ public partial class SaveManager : Node
 
         gridManager.RestoreState(data.World);
         buildManager.RestoreRooms(data.Rooms);
+        buildManager.RestoreDesignations(data.Designations);
         materialWorld.RestoreState(data.Materials);
 
         queen.Position = new Vector2(data.QueenX, data.QueenY);

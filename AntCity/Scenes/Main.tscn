@@ -219,6 +219,12 @@ text = "🥚 Laying: off"
 layout_mode = 2
 text = "Build"
 
+[node name="DigButton" type="Button" parent="UI/ThemeRoot/BottomBar/Actions"]
+layout_mode = 2
+tooltip_text = "Draw out tunnels for the colony to cut. Drag over solid ground to mark it; whatever you mark first is dug first. Right-click to stop."
+toggle_mode = true
+text = "Dig"
+
 [node name="ColonyButton" type="Button" parent="UI/ThemeRoot/BottomBar/Actions"]
 layout_mode = 2
 tooltip_text = "What every ant is doing, what food is coming in against what it costs, and how long the stores would last at the current rate."
