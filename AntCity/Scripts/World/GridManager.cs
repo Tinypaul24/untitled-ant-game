@@ -148,7 +148,15 @@ public partial class GridManager : Node2D
 
     // Solid cells are made of GrainsPerCell small pieces that ants chip out one at a time,
     // so a wall visibly crumbles instead of flipping to open tunnel in one step.
-    public const int GrainsPerCell = 4;
+    //
+    // Sixteen, not four, because a tile is now a job rather than a moment. The counter has no owner
+    // - whoever swings takes the next grain - so four workers on one face get through it in a
+    // quarter of the time one of them would, which is the whole of co-operative digging.
+    //
+    // Must divide MaterialWorld.CellsPerTile exactly. AntWorker.GrainsPerDigTick is CellsPerTile
+    // over this, in integer arithmetic, and a remainder is spoil that is dug out of the world and
+    // never picked up by anybody.
+    public const int GrainsPerCell = 16;
 
     private readonly Dictionary<Vector2I, int> grainsRemoved = new();
 

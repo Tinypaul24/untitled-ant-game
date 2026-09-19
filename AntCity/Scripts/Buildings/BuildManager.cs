@@ -27,7 +27,18 @@ public partial class BuildManager : Node2D
 
     private readonly List<Room> rooms = new();
     private readonly Dictionary<Vector2I, Room> roomsByCell = new();
-    private readonly HashSet<Vector2I> claimedDigCells = new();
+    // How many diggers are working each claimed cell.
+    //
+    // This was a HashSet, and that set was the only thing in the game preventing ants from digging
+    // together. GridManager.DigGrain increments an ownerless per-cell counter, so two ants swinging
+    // at the same wall have always shared the progress - which is why box-selecting five workers
+    // and right-clicking rock already worked. Job-board work was the exception, for no better
+    // reason than that the claim was a membership test.
+    private readonly Dictionary<Vector2I, int> claimedDigCells = new();
+
+    // A cell has four faces an ant can stand at and reach from. More than that and they are queuing
+    // rather than digging.
+    private const int MaxDiggersPerCell = 4;
 
     private BuildingType? pendingType;
     private bool isDragging;
@@ -212,7 +223,7 @@ public partial class BuildManager : Node2D
 
             foreach (Vector2I candidate in room.PendingDigCells)
             {
-                if (claimedDigCells.Contains(candidate))
+                if (IsFullyManned(candidate))
                 {
                     continue;
                 }
@@ -230,7 +241,7 @@ public partial class BuildManager : Node2D
 
         if (found)
         {
-            claimedDigCells.Add(cell);
+            Claim(cell);
         }
 
         return found;
@@ -346,7 +357,7 @@ public partial class BuildManager : Node2D
                 continue;
             }
 
-            if (claimedDigCells.Contains(candidate))
+            if (IsFullyManned(candidate))
             {
                 continue;
             }
@@ -371,7 +382,7 @@ public partial class BuildManager : Node2D
 
         if (found)
         {
-            claimedDigCells.Add(cell);
+            Claim(cell);
         }
 
         return found;
@@ -421,7 +432,38 @@ public partial class BuildManager : Node2D
     // dug out, and the staleness prune in TryClaimNearestObstruction when one stops being diggable.
     public void ReleaseClaim(Vector2I cell)
     {
-        claimedDigCells.Remove(cell);
+        // One digger leaving, not the job ending. The cell keeps the rest of its team and stays on
+        // the board; the four places that genuinely retire a cell - OnCellDug, the staleness prune,
+        // RestoreRooms and Demolish - drop the whole entry with Remove, which still does exactly
+        // what it did when this was a set.
+        if (!claimedDigCells.TryGetValue(cell, out int diggers))
+        {
+            return;
+        }
+
+        if (diggers <= 1)
+        {
+            claimedDigCells.Remove(cell);
+            return;
+        }
+
+        claimedDigCells[cell] = diggers - 1;
+    }
+
+    private bool IsFullyManned(Vector2I cell)
+    {
+        return claimedDigCells.TryGetValue(cell, out int diggers) && diggers >= MaxDiggersPerCell;
+    }
+
+    // Nearest cell that still has room on it, rather than nearest cell nobody has taken.
+    //
+    // That is what makes a team: four idle workers asking in turn all get sent to the same face
+    // before anybody starts the next one. Preferring the least-crowded cell instead would hand each
+    // of them a different one, which is the spread-out behaviour this is meant to replace.
+    private void Claim(Vector2I cell)
+    {
+        claimedDigCells.TryGetValue(cell, out int diggers);
+        claimedDigCells[cell] = diggers + 1;
     }
 
     public void ReportFurnishDone(Room room)
@@ -800,6 +842,26 @@ public partial class BuildManager : Node2D
     // a claim that never clears is a cell no ant will ever be offered again.
     public int ClaimedDigCellCount => claimedDigCells.Count;
 
+    // Cells with more than one worker on them. The headline number for whether digging is actually
+    // co-operative in play, rather than merely permitted to be.
+    public int TeamDigCellCount
+    {
+        get
+        {
+            int teams = 0;
+
+            foreach (int diggers in claimedDigCells.Values)
+            {
+                if (diggers > 1)
+                {
+                    teams++;
+                }
+            }
+
+            return teams;
+        }
+    }
+
     public int ObstructionCount => obstructions.Count;
 
     public Room RoomAt(Vector2I cell)
@@ -992,16 +1054,24 @@ public partial class BuildManager : Node2D
 
         // Not a patch of somebody else's cavern with a label on it.
         //
-        // The threshold is measured, not guessed. Watching the colony play itself, a chamber dug
-        // off a corridor comes out with two or three of its sixteen ring tiles open - the doorway
-        // the diggers came in through, and the odd cell their descending staircase clipped. An
-        // already-excavated cavern is sixteen of sixteen. Half the ring sits in the middle of a very
-        // wide gap, and it says what it means: more than half the wall is missing, so there is no
-        // wall.
+        // The threshold is measured, not guessed - and it has been measured twice.
+        //
+        // Originally: a chamber dug off a one-tile corridor came out with two or three of its
+        // sixteen ring tiles open - the doorway the diggers came in through, and the odd cell their
+        // descending staircase clipped - so a half-open ring sat in the middle of a very wide gap.
+        //
+        // Corridors are two tiles tall now, and that moved the honest number rather than the
+        // principle. Every route converging on a site opens the row above it as well as the row it
+        // walks, so the ring around a legitimately approached chamber now reads five or six of
+        // sixteen, and a site several workers dug their way into from different directions reads
+        // ten. Refusing those is refusing ordinary play: the first colony measured after the change
+        // could not place its Nesting Chamber at all, capped itself at ten ants and starved.
+        //
+        // Two thirds keeps the gap the rule depends on. A real cavern is still sixteen of sixteen.
         int openRing = OpenRingCells(footprint);
         int ringCells = RingCellCount(footprint);
 
-        if (openRing * 2 > ringCells)
+        if (openRing * 3 > ringCells * 2)
         {
             reason = $"That is open cavern, not a chamber - {openRing} of {ringCells} edge tiles are already dug.";
             return false;

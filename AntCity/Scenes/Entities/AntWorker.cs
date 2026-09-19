@@ -35,8 +35,13 @@ public partial class AntWorker : Area2D
     // the spot, and it is also what stops a bounded turn rate becoming an orbit she never escapes.
     private const float PivotSpeedFraction = 0.2f;
     private static readonly float SharpTurnRadians = Mathf.DegToRad(70f);
-    // Seconds to excavate one whole cell, split evenly across the grains it is made of.
-    private const float DigSeconds = 2f;
+    // Seconds for ONE ant to excavate a whole cell, split evenly across the grains it is made of.
+    //
+    // Eight rather than two, against sixteen grains rather than four - so the swing rate per ant is
+    // unchanged at one grain every half second, and a cell that used to take one worker two seconds
+    // takes four workers the same two seconds. What has changed is what a lone digger is: she used
+    // to be a bulldozer, and she is now one ant chipping at a wall for eight seconds.
+    private const float DigSeconds = 8f;
     private const float DigSecondsPerGrain = DigSeconds / GridManager.GrainsPerCell;
     private const int WanderCellRadius = 3;
     private const double MinWanderPause = 1.0;
@@ -443,6 +448,7 @@ public partial class AntWorker : Area2D
         SpoilLeftovers = 0;
         IdleStallRescues = 0;
         HaulTrips = 0;
+        HaulsRefused = 0;
     }
 
     // Last resort. Stranding is a one-way failure in this game, so an ant must never be able to
@@ -886,7 +892,24 @@ public partial class AntWorker : Area2D
             return;
         }
 
-        if (buildManager.TryClaimDigJob(Position, out Vector2I cell))
+        // What she is carrying goes up before she takes on anything else.
+        //
+        // Measured: the spoil hill was being built almost entirely by accident. A digger only ever
+        // made a deliberate trip when she filled up mid-cell, which co-operative digging made rare -
+        // four ants sharing a face each accumulate a quarter as fast - so over a four minute run of
+        // 129 tiles dug there were seven trips. The earth still reached the surface, because
+        // StopCurrentTask tips a load wherever the ant happens to be standing and some of them were
+        // standing outside, but "some of it gets dropped outdoors during a job change" is not
+        // taking the spoil upstairs.
+        if (TryHaulSpoil())
+        {
+            return;
+        }
+
+        // Full, with nowhere to empty out: no more digging until that changes.
+        bool canCarryMore = carriedGrains.Count < HaulCapacityGrains || !nowhereToTip;
+
+        if (canCarryMore && buildManager.TryClaimDigJob(Position, out Vector2I cell))
         {
             claimedJobCell = cell;
             IssueDigCommand(cell, cell);
@@ -926,6 +949,52 @@ public partial class AntWorker : Area2D
         }
 
         PickWanderTarget();
+    }
+
+    // Worth a trip to the surface: half a tile of earth. Below that she keeps it and carries on,
+    // and it accumulates across jobs rather than sending her up the shaft with a thimbleful.
+    private const int WorthHaulingGrains = HaulCapacityGrains / 4;
+
+    // The load size at which tipping achieved nothing, or -1.
+    //
+    // Release is sky-only and can also refuse a column that is already full to the top, handing the
+    // load straight back. Without this, hauling on the way to idle is a loop: walk to the tip, fail
+    // to place anything, go idle still carrying, walk to the same tip. That exact shape has been
+    // measured on this code before at thirty-five thousand grains of shuttling in four minutes, so
+    // it gets a guard rather than an optimistic comment. Any change to the load clears it.
+    private int spoilStuckAt = -1;
+
+    // Set when a trip to the tip was wanted and refused, cleared the moment one succeeds.
+    //
+    // While it is set and she is full, GoIdle will not give her digging. A colony that has nowhere
+    // to put its spoil should stop cutting more of it, not stand at the face turning earth into
+    // nothing, and this is the only place that knows the difference.
+    private bool nowhereToTip;
+
+    private bool TryHaulSpoil()
+    {
+        if (carriedGrains.Count < WorthHaulingGrains || carriedGrains.Count == spoilStuckAt)
+        {
+            return false;
+        }
+
+        // Asked before setting off, not after arriving. An ant sealed in a half-dug chamber can
+        // reach nothing above ground, and the drop-off search will hand back somewhere eight tiles
+        // down rather than admit it.
+        Vector2I here = gridManager.WorldToCell(Position);
+
+        if (!gridManager.IsViableSpoilDropOff(gridManager.FindSpoilDropOff(here)))
+        {
+            return false;
+        }
+
+        int before = carriedGrains.Count;
+
+        return HaulGrainsThen(() =>
+        {
+            spoilStuckAt = carriedGrains.Count == before ? before : -1;
+            GoIdle();
+        });
     }
 
     // A laden forager scent-marks the ground on her way home.
@@ -1276,15 +1345,11 @@ public partial class AntWorker : Area2D
             AbandonCurrentJob();
             hasDigJob = false;
 
-            if (carriedGrains.Count > 0)
-            {
-                HaulGrainsThen(() =>
+            if (!HaulGrainsThen(() =>
                 {
                     wanderHome = Position;
                     GoIdle();
-                });
-            }
-            else
+                }))
             {
                 wanderHome = Position;
                 GoIdle();
@@ -1355,7 +1420,12 @@ public partial class AntWorker : Area2D
             if (carriedGrains.Count >= HaulCapacityGrains)
             {
                 pendingDigCallback = null;
-                HaulGrainsThen(ResumeDigJob);
+
+                if (!HaulGrainsThen(ResumeDigJob))
+                {
+                    PutTheJobDownUntilThereIsSomewhereToTip();
+                }
+
                 return;
             }
 
@@ -1400,7 +1470,13 @@ public partial class AntWorker : Area2D
 
         // A full load gets hauled out immediately, mid-corridor, rather than waiting for the whole dig job to finish.
         Action next = carriedGrains.Count >= HaulCapacityGrains
-            ? () => HaulGrainsThen(ResumeDigJob)
+            ? () =>
+            {
+                if (!HaulGrainsThen(ResumeDigJob))
+                {
+                    PutTheJobDownUntilThereIsSomewhereToTip();
+                }
+            }
             : callback;
 
         // She only moves into what she just opened if there is a floor in there. Stepping into open
@@ -1436,18 +1512,53 @@ public partial class AntWorker : Area2D
 
     // Walks to the spoil dump, tips the load onto the pile beside it, then continues whatever
     // dig/forage job was interrupted to do it.
-    private void HaulGrainsThen(Action afterDump)
+    // She is full, and there is nowhere above ground she can reach to empty out.
+    //
+    // Cutting more earth loose would be cutting it into nothing: the grain loop stops collecting at
+    // capacity but the cell is cleared regardless. So the dig job goes back on the board for
+    // somebody who can still carry, and she finds something else to be useful at - foraging, a
+    // corpse, following a trail. GoIdle will keep declining to give her digging until either the
+    // load moves or a shaft reaches daylight, and it cannot freeze her: the wander fallback at the
+    // end of the chain always arms a timer.
+    private void PutTheJobDownUntilThereIsSomewhereToTip()
     {
+        AbandonCurrentJob();
+        hasDigJob = false;
+        GoIdle();
+    }
+
+    // Walks the load to the tip. Returns false if there was nowhere to walk it to, in which case
+    // nothing happens and the caller decides what she does instead.
+    //
+    // It used to swallow that case by running afterDump anyway, which at every call site meant
+    // "carry on digging". Measured, that was sixteen thousand refusals against fifteen trips in a
+    // four minute run: a digger who fills up underground cannot collect any more - the grain loop
+    // stops at capacity - but the cell is cleared regardless, so she stood there grinding earth out
+    // of the world and into nothing. Whether to keep digging is not a decision this method should
+    // be making silently.
+    private bool HaulGrainsThen(Action afterDump)
+    {
+        // Carrying nothing is not a trip, and it is not a refused trip either. Without this the
+        // refusal count measures "jobs that ended" rather than "spoil that could not be moved",
+        // which are very different problems to be told you have.
+        if (carriedGrains.Count == 0)
+        {
+            return false;
+        }
+
         Vector2I current = gridManager.WorldToCell(Position);
         Vector2I dropOff = gridManager.FindSpoilDropOff(current);
 
-        // Nowhere to put it yet - see IsViableSpoilDropOff. Carry on working rather than walking to
-        // nothing and back.
+        // Nowhere to put it yet - see IsViableSpoilDropOff.
         if (!gridManager.IsViableSpoilDropOff(dropOff))
         {
-            afterDump();
-            return;
+            HaulsRefused++;
+            nowhereToTip = true;
+
+            return false;
         }
+
+        nowhereToTip = false;
 
         List<Vector2I> route = gridManager.FindTunnelPath(current, dropOff) ?? new List<Vector2I> { current };
 
@@ -1455,6 +1566,11 @@ public partial class AntWorker : Area2D
         // go and carried on working is not recorded as a trip that never happened.
         HaulTrips++;
 
+        return FollowHaulRoute(route, afterDump);
+    }
+
+    private bool FollowHaulRoute(List<Vector2I> route, Action afterDump)
+    {
         FollowPath(route, () =>
         {
             Vector2I arrived = gridManager.WorldToCell(Position);
@@ -1480,6 +1596,8 @@ public partial class AntWorker : Area2D
             QueueRedraw();
             afterDump();
         });
+
+        return true;
     }
 
     // Grains that found nowhere to go. Counted rather than shrugged off, on the same principle as
@@ -1493,6 +1611,11 @@ public partial class AntWorker : Area2D
     // three whole tiles, so a digger opens an entire stretch of corridor before she ever has to
     // walk one out. Hauling nobody can see is hauling that may as well not be simulated.
     public static int HaulTrips { get; private set; }
+
+    // Trips that were wanted and could not be made, because the drop-off search could not reach
+    // anywhere above ground. Separated from HaulTrips so "hauling is rare" can be told apart from
+    // "hauling is being refused", which are different problems with different fixes.
+    public static int HaulsRefused { get; private set; }
 
     // Re-enters whichever job was interrupted for a haul trip, by target rather than by raw callback,
     // since the ant is now standing at the dump and needs a fresh route back to the dig front.
@@ -1553,9 +1676,8 @@ public partial class AntWorker : Area2D
         // from beside the source and never digs it out, since tunnelling through food destroys it.
         if (GridManager.IsWithinReach(current, target))
         {
-            if (carriedGrains.Count > 0)
+            if (carriedGrains.Count > 0 && HaulGrainsThen(ResumeDigJob))
             {
-                HaulGrainsThen(ResumeDigJob);
                 return;
             }
 

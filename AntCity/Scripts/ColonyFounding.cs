@@ -37,7 +37,13 @@ public partial class ColonyFounding : Node
     private static readonly PackedScene AntWorkerScene =
         GD.Load<PackedScene>("res://AntCity/Scenes/Entities/AntWorker.tscn");
 
-    [Export] public int StartingWorkers { get; set; } = 3;
+    // Enough to be a colony rather than a trio.
+    //
+    // Three could not form a dig team of four, let alone form one and still have anybody left to
+    // fetch food. Eight costs sixteen food an hour against a forager who brings in roughly thirty
+    // seven a minute, so the opening is comfortably affordable - food has never been the scarce
+    // thing here.
+    [Export] public int StartingWorkers { get; set; } = 8;
 
     private GridManager grid;
     private ColonyManager colony;
