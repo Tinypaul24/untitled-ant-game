@@ -219,6 +219,12 @@ text = "🥚 Laying: off"
 layout_mode = 2
 text = "Build"
 
+[node name="ColonyButton" type="Button" parent="UI/ThemeRoot/BottomBar/Actions"]
+layout_mode = 2
+tooltip_text = "What every ant is doing, what food is coming in against what it costs, and how long the stores would last at the current rate."
+toggle_mode = true
+text = "Colony"
+
 [node name="EatDeadButton" type="Button" parent="UI/ThemeRoot/BottomBar/Actions"]
 layout_mode = 2
 tooltip_text = "What the colony does with workers who starve. Off, their bodies are carried out to the spoil heap. On, the colony eats them - about 12 food each, less than it cost to raise them."
@@ -329,6 +335,47 @@ text = "detail"
 layout_mode = 2
 tooltip_text = "Pull this room down. Half its food cost comes back; the cavity stays dug."
 text = "Pull down"
+
+[node name="ColonyPanel" type="PanelContainer" parent="UI/ThemeRoot"]
+visible = false
+anchors_preset = 9
+anchor_bottom = 1.0
+offset_left = 4.0
+offset_top = 45.0
+offset_right = 168.0
+offset_bottom = -26.0
+grow_vertical = 2
+
+[node name="ColonyBox" type="VBoxContainer" parent="UI/ThemeRoot/ColonyPanel"]
+layout_mode = 2
+theme_override_constants/separation = 3
+
+[node name="WorkTitle" type="Label" parent="UI/ThemeRoot/ColonyPanel/ColonyBox"]
+layout_mode = 2
+text = "At work"
+
+[node name="WorkDetail" type="Label" parent="UI/ThemeRoot/ColonyPanel/ColonyBox"]
+layout_mode = 2
+autowrap_mode = 2
+text = "detail"
+
+[node name="LarderTitle" type="Label" parent="UI/ThemeRoot/ColonyPanel/ColonyBox"]
+layout_mode = 2
+text = "Larder"
+
+[node name="LarderDetail" type="Label" parent="UI/ThemeRoot/ColonyPanel/ColonyBox"]
+layout_mode = 2
+autowrap_mode = 2
+text = "detail"
+
+[node name="LogTitle" type="Label" parent="UI/ThemeRoot/ColonyPanel/ColonyBox"]
+layout_mode = 2
+text = "Lately"
+
+[node name="LogDetail" type="Label" parent="UI/ThemeRoot/ColonyPanel/ColonyBox"]
+layout_mode = 2
+autowrap_mode = 2
+text = ""
 
 [node name="ToastPanel" type="PanelContainer" parent="UI/ThemeRoot"]
 visible = false

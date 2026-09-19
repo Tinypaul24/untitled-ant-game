@@ -1,4 +1,5 @@
 using Godot;
+using System.Collections.Generic;
 
 public partial class ColonyUI : CanvasLayer
 {
@@ -34,6 +35,22 @@ public partial class ColonyUI : CanvasLayer
 
     private PanelContainer previewPanel;
     private Label previewLabel;
+
+    private Button colonyButton;
+    private Control colonyPanel;
+    private Label workDetail;
+    private Label larderDetail;
+    private Label logDetail;
+
+    // The last few alerts, newest first.
+    //
+    // ColonyManager.Alert is a colony-wide bus carrying fifteen kinds of message into a single
+    // 2.5 second toast with no history, so "four hours before they start to die" was exactly as
+    // forgettable as "stores are full" and both were gone before you looked up. A player who is
+    // meant to plan needs to be able to read what just happened.
+    private readonly List<string> alertLog = new();
+
+    private const int AlertsKept = 6;
 
     private Control roomPanel;
     private Label roomTitle;
@@ -82,6 +99,12 @@ public partial class ColonyUI : CanvasLayer
         previewPanel = GetNode<PanelContainer>("ThemeRoot/PreviewPanel");
         previewLabel = GetNode<Label>("ThemeRoot/PreviewPanel/PreviewLabel");
 
+        colonyButton = GetNode<Button>("ThemeRoot/BottomBar/Actions/ColonyButton");
+        colonyPanel = GetNode<Control>("ThemeRoot/ColonyPanel");
+        workDetail = GetNode<Label>("ThemeRoot/ColonyPanel/ColonyBox/WorkDetail");
+        larderDetail = GetNode<Label>("ThemeRoot/ColonyPanel/ColonyBox/LarderDetail");
+        logDetail = GetNode<Label>("ThemeRoot/ColonyPanel/ColonyBox/LogDetail");
+
         roomPanel = GetNode<Control>("ThemeRoot/RoomPanel");
         roomTitle = GetNode<Label>("ThemeRoot/RoomPanel/RoomBox/RoomTitle");
         roomDetail = GetNode<Label>("ThemeRoot/RoomPanel/RoomBox/RoomDetail");
@@ -117,6 +140,8 @@ public partial class ColonyUI : CanvasLayer
         pauseButton.Toggled += OnPauseToggled;
 
         // Toggle the build tray, and start placement when a building is chosen.
+        colonyButton.Toggled += pressed => colonyPanel.Visible = pressed;
+
         buildButton.Pressed += ToggleBuildTray;
         nestingChamberButton.Pressed += () => buildManager.BeginPlacement(BuildingType.NestingChamber);
         granaryButton.Pressed += () => buildManager.BeginPlacement(BuildingType.Granary);
@@ -149,6 +174,61 @@ public partial class ColonyUI : CanvasLayer
         {
             ShowRoom(buildManager.Selected);
         }
+
+        if (colonyPanel.Visible)
+        {
+            RefreshColonyPanel();
+        }
+    }
+
+    // What the colony is doing, and whether it can keep doing it.
+    //
+    // Every number here already existed and was public; the only thing reading them was the
+    // headless probe. A game meant to be played by deciding things has to say what there is to
+    // decide about.
+    private void RefreshColonyPanel()
+    {
+        var doing = new Dictionary<string, int>();
+        int ants = 0;
+
+        foreach (Node node in GetTree().GetNodesInGroup("ants"))
+        {
+            if (node is not AntWorker worker)
+            {
+                continue;
+            }
+
+            ants++;
+            doing.TryGetValue(worker.DebugState, out int count);
+            doing[worker.DebugState] = count + 1;
+        }
+
+        var work = new List<string>();
+
+        foreach (KeyValuePair<string, int> entry in doing)
+        {
+            work.Add($"{entry.Value} {entry.Key}");
+        }
+
+        work.Sort();
+        workDetail.Text = ants == 0 ? "nobody yet" : string.Join("\n", work);
+
+        // Income is the lifetime average, and an in-game hour is sixty seconds, so food per minute
+        // and food per hour are the same number - which is the only reason this arithmetic is
+        // honest without a second accumulator.
+        double income = colonyManager.FoodPerMinute;
+        double drain = colonyManager.UpkeepPerHour - colonyManager.FoodPerHourFarmed - income;
+
+        string outlook = drain <= 0.05
+            ? "feeding itself"
+            : $"{colonyManager.Food / drain:0} hours of stores left";
+
+        larderDetail.Text =
+            $"in  {income:0.0}/hr\n" +
+            $"out {colonyManager.UpkeepPerHour}/hr for {colonyManager.Ants} ants, {colonyManager.LarvaCount} larvae\n" +
+            $"{outlook}";
+
+        logDetail.Text = alertLog.Count == 0 ? "nothing yet" : string.Join("\n", alertLog);
     }
 
 
@@ -230,6 +310,13 @@ public partial class ColonyUI : CanvasLayer
 
     private void ShowToast(string message)
     {
+        alertLog.Insert(0, message);
+
+        if (alertLog.Count > AlertsKept)
+        {
+            alertLog.RemoveAt(alertLog.Count - 1);
+        }
+
         toastTween?.Kill();
 
         toastLabel.Text = message;

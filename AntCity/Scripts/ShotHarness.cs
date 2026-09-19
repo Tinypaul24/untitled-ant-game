@@ -132,6 +132,18 @@ public partial class ShotHarness : Node
         {
             Save("wall.png");
 
+            // The overview panel, last, once the colony is big enough for its numbers to say
+            // something. It is the one piece of UI whose whole job is to be read, so it is the one
+            // that most needs looking at rather than asserting about.
+            GetNode<Button>("Main/UI/ThemeRoot/BottomBar/Actions/ColonyButton").ButtonPressed = true;
+            camera.Zoom = new Vector2(2f, 2f);
+            return;
+        }
+
+        if (frames == 5790)
+        {
+            Save("colony.png");
+
             GetTree().Quit();
         }
     }
