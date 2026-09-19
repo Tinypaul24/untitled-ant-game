@@ -1,4 +1,5 @@
 using Godot;
+using System.Collections.Generic;
 
 public partial class ColonyManager : Node
 {
@@ -31,6 +32,104 @@ public partial class ColonyManager : Node
     // Whether the Queen is currently allowed to lay. The player owns this decision - growth costs
     // food and every new ant raises upkeep, so when the colony expands is theirs to choose.
     public bool LayingEnabled { get; private set; }
+
+    // How many workers the player wants on each trade. Diggers are whoever is left, because
+    // excavation is the work that is always there and never urgent - a colony short of foragers
+    // starves, a colony short of builders leaves a paid-for chamber unfurnished, and a colony short
+    // of diggers simply expands more slowly.
+    public int ForagerQuota { get; private set; } = 3;
+    public int BuilderQuota { get; private set; } = 1;
+
+    public int DiggerQuota => Mathf.Max(0, Ants - ForagerQuota - BuilderQuota);
+
+    public void SetForagerQuota(int workers)
+    {
+        ForagerQuota = Mathf.Max(0, workers);
+        RebalanceRoles();
+        EmitSignal(SignalName.ColonyChanged);
+    }
+
+    public void SetBuilderQuota(int workers)
+    {
+        BuilderQuota = Mathf.Max(0, workers);
+        RebalanceRoles();
+        EmitSignal(SignalName.ColonyChanged);
+    }
+
+    private int lastWorkforce = -1;
+
+    // Roles are settled here rather than in AddAnt, because AddAnt runs before the new worker's
+    // node is in the tree - Larva.Mature counts her, then instantiates her - so a rebalance at that
+    // moment would assign roles to everybody except the ant that prompted it. Watching the group
+    // itself has no such ordering to get wrong, and RebalanceRoles only ever moves the surplus, so
+    // noticing a frame late costs nothing.
+    public override void _Process(double delta)
+    {
+        int workforce = GetTree().GetNodeCountInGroup("ants");
+
+        if (workforce == lastWorkforce)
+        {
+            return;
+        }
+
+        lastWorkforce = workforce;
+        RebalanceRoles();
+    }
+
+    // Move as few workers as possible to meet the quotas.
+    //
+    // Deliberately not "sort everyone and reassign in order": every move costs the ant her current
+    // job, so a rebalance that reshuffles the whole colony on each birth would keep the nest in a
+    // permanent state of putting things down. Only the surplus moves.
+    //
+    // Food first when the colony cannot satisfy both quotas, for the obvious reason.
+    public void RebalanceRoles()
+    {
+        var workers = new List<AntWorker>();
+
+        foreach (Node node in GetTree().GetNodesInGroup("ants"))
+        {
+            if (node is AntWorker worker)
+            {
+                workers.Add(worker);
+            }
+        }
+
+        int foragers = Mathf.Min(ForagerQuota, workers.Count);
+        int builders = Mathf.Min(BuilderQuota, workers.Count - foragers);
+
+        FillRole(workers, AntRole.Forager, foragers);
+        FillRole(workers, AntRole.Builder, builders);
+
+        // Everybody still unspoken for digs.
+        foreach (AntWorker worker in workers)
+        {
+            worker.ReassignTo(AntRole.Digger);
+        }
+    }
+
+    // Takes `wanted` workers for `role` out of `pool`, preferring the ones already doing it.
+    private static void FillRole(List<AntWorker> pool, AntRole role, int wanted)
+    {
+        for (int i = pool.Count - 1; i >= 0 && wanted > 0; i--)
+        {
+            if (pool[i].Role != role)
+            {
+                continue;
+            }
+
+            pool.RemoveAt(i);
+            wanted--;
+        }
+
+        while (wanted > 0 && pool.Count > 0)
+        {
+            AntWorker recruit = pool[pool.Count - 1];
+            pool.RemoveAt(pool.Count - 1);
+            recruit.ReassignTo(role);
+            wanted--;
+        }
+    }
 
     public int PopulationUsed => Ants + Egg + LarvaCount;
     public bool HasRoomForMorePopulation => PopulationUsed < Capacity;
@@ -328,6 +427,8 @@ public partial class ColonyManager : Node
             TotalFoodEarned = totalFoodEarned,
             StarvingIntervalStreak = starvingIntervalStreak,
             LayingEnabled = LayingEnabled,
+            ForagerQuota = ForagerQuota,
+            BuilderQuota = BuilderQuota,
         };
     }
 
@@ -345,6 +446,17 @@ public partial class ColonyManager : Node
         totalFoodEarned = save.TotalFoodEarned;
         starvingIntervalStreak = save.StarvingIntervalStreak;
         LayingEnabled = save.LayingEnabled;
+
+        // A save from before crew quotas keeps the defaults rather than reading as a colony whose
+        // player had switched foraging off entirely.
+        if (save.ForagerQuota >= 0)
+        {
+            ForagerQuota = save.ForagerQuota;
+            BuilderQuota = Mathf.Max(0, save.BuilderQuota);
+        }
+
+        // Force one on the next frame, whatever the restored ants happen to think they are.
+        lastWorkforce = -1;
         Recompute();
 
         EmitSignal(SignalName.ColonyChanged);

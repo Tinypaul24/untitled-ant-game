@@ -195,6 +195,19 @@ public partial class BuildManager : Node2D
         }
     }
 
+    // A blocked passage, for anybody.
+    //
+    // Split out from room digging so that roles can gate one and not the other. Clearing a cave-in
+    // is the one piece of work no allocation may ever switch off: the passage can be the only route
+    // in or out, and a colony that has put everyone on foraging duty must not be able to wall
+    // itself in and keep walking past the wall.
+    public bool TryClaimObstruction(Vector2 fromPosition, out Vector2I cell)
+    {
+        PruneStaleRoomCells();
+
+        return TryClaimNearestObstruction(fromPosition, out cell);
+    }
+
     public bool TryClaimDigJob(Vector2 fromPosition, out Vector2I cell)
     {
         // Retiring dead room cells happens whatever else the board is holding.
@@ -209,6 +222,14 @@ public partial class BuildManager : Node2D
         {
             return true;
         }
+
+        return TryClaimRoomDigJob(fromPosition, out cell);
+    }
+
+    // Chamber excavation, which a worker has to be a digger to pick up.
+    public bool TryClaimRoomDigJob(Vector2 fromPosition, out Vector2I cell)
+    {
+        PruneStaleRoomCells();
 
         cell = default;
         bool found = false;
@@ -840,6 +861,13 @@ public partial class BuildManager : Node2D
 
     // How much work the job board is holding. Both should return to zero once the colony is idle;
     // a claim that never clears is a cell no ant will ever be offered again.
+    // Puts a cave-in on the board directly. Obstructions are only ever created by a walkable tile
+    // going solid, which a test cannot stage without also burying the ant it wants to ask.
+    public void NoticeObstructionForTest(Vector2I cell)
+    {
+        obstructions.Add(cell);
+    }
+
     public int ClaimedDigCellCount => claimedDigCells.Count;
 
     // Cells with more than one worker on them. The headline number for whether digging is actually

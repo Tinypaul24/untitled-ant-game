@@ -44,6 +44,7 @@ public partial class TerrainTests : Node
         RoomsNeedWallsAroundThem();
         RoomWallsCementThemselves();
         AnIdleAntAlwaysFindsSomethingToDo();
+        EveryRoleStillHasSomethingToDo();
         PullingDownARoomDoesNotStrandItsBuilder();
         ReleasingAClaimKeepsTheJob();
         ARoomGivesUpOnGroundThatTurnedToRock();
@@ -1395,6 +1396,75 @@ public partial class TerrainTests : Node
     //
     // Driven through the wander timer, which is the real signal that runs GoIdle, and fired on every
     // worker in the colony whatever she happens to be doing - which is exactly the case that broke.
+    // No role can leave a worker with nothing pending, and no role can switch off clearing a
+    // cave-in.
+    //
+    // The first is the freeze invariant restated for roles: an ant always has a route in flight or
+    // a timer running. It holds by construction, because the wander fallback at the end of GoIdle
+    // is unconditional - but "holds by construction" is exactly the kind of claim that stops being
+    // true when somebody adds a fourth role, so it gets a test rather than a comment.
+    //
+    // The second is the rule the colony cannot survive without. A blocked passage can be the only
+    // way in or out, and it is reachable from every role deliberately: putting everybody on
+    // foraging duty must not be able to wall the nest in.
+    private void EveryRoleStillHasSomethingToDo()
+    {
+        var roles = new[] { AntRole.Digger, AntRole.Builder, AntRole.Forager };
+        int checkedAnts = 0;
+        int stalled = 0;
+
+        foreach (AntRole role in roles)
+        {
+            foreach (Node child in GetNode("Main").GetChildren())
+            {
+                if (child is not AntWorker ant)
+                {
+                    continue;
+                }
+
+                ant.ReassignTo(role);
+                ant.GetNode<Timer>("WanderTimer").EmitSignal(Timer.SignalName.Timeout);
+
+                checkedAnts++;
+
+                if (ant.IsStalled)
+                {
+                    stalled++;
+                }
+            }
+        }
+
+        Check(checkedAnts > 0, "there are workers to put through every role", $"{checkedAnts} checks");
+        Check(stalled == 0, "no role leaves a worker with nothing pending", $"{stalled} of {checkedAnts} stalled");
+
+        // A cave-in, and a colony with nobody assigned to digging.
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        Vector2I blocked = FindDiggableNear(grid.NestCenterCell + new Vector2I(4, 9));
+
+        build.NoticeObstructionForTest(blocked);
+
+        int claimedByNonDiggers = 0;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is not AntWorker ant)
+            {
+                continue;
+            }
+
+            ant.ReassignTo(AntRole.Forager);
+
+            if (build.TryClaimObstruction(ant.Position, out Vector2I got))
+            {
+                claimedByNonDiggers++;
+                build.ReleaseClaim(got);
+            }
+        }
+
+        Check(claimedByNonDiggers > 0, "a cave-in can be claimed by a worker who is not a digger",
+            $"{claimedByNonDiggers} foragers could take it");
+    }
+
     private void AnIdleAntAlwaysFindsSomethingToDo()
     {
         int checked_ = 0;

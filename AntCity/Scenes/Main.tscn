@@ -359,6 +359,44 @@ layout_mode = 2
 autowrap_mode = 2
 text = "detail"
 
+[node name="CrewTitle" type="Label" parent="UI/ThemeRoot/ColonyPanel/ColonyBox"]
+layout_mode = 2
+text = "Crew"
+
+[node name="ForagerRow" type="HBoxContainer" parent="UI/ThemeRoot/ColonyPanel/ColonyBox"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="ForagerLabel" type="Label" parent="UI/ThemeRoot/ColonyPanel/ColonyBox/ForagerRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Foragers 3"
+
+[node name="ForagerFewer" type="Button" parent="UI/ThemeRoot/ColonyPanel/ColonyBox/ForagerRow"]
+layout_mode = 2
+text = "-"
+
+[node name="ForagerMore" type="Button" parent="UI/ThemeRoot/ColonyPanel/ColonyBox/ForagerRow"]
+layout_mode = 2
+text = "+"
+
+[node name="BuilderRow" type="HBoxContainer" parent="UI/ThemeRoot/ColonyPanel/ColonyBox"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="BuilderLabel" type="Label" parent="UI/ThemeRoot/ColonyPanel/ColonyBox/BuilderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Builders 1"
+
+[node name="BuilderFewer" type="Button" parent="UI/ThemeRoot/ColonyPanel/ColonyBox/BuilderRow"]
+layout_mode = 2
+text = "-"
+
+[node name="BuilderMore" type="Button" parent="UI/ThemeRoot/ColonyPanel/ColonyBox/BuilderRow"]
+layout_mode = 2
+text = "+"
+
 [node name="LarderTitle" type="Label" parent="UI/ThemeRoot/ColonyPanel/ColonyBox"]
 layout_mode = 2
 text = "Larder"

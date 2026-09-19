@@ -83,6 +83,12 @@ public class ColonySave
     public int TotalFoodEarned { get; set; }
     public int StarvingIntervalStreak { get; set; }
     public bool LayingEnabled { get; set; }
+
+    // Minus one means "this save predates crew quotas", which is not the same as a player who
+    // deliberately set zero foragers. Absent properties keep their initialiser, so the sentinel
+    // does the version check that the version number deliberately does not.
+    public int ForagerQuota { get; set; } = -1;
+    public int BuilderQuota { get; set; } = -1;
 }
 
 public class ClockSave
@@ -113,6 +119,12 @@ public class AntSave
     public bool HasForageTarget { get; set; }
     public int ForageTargetX { get; set; }
     public int ForageTargetY { get; set; }
+
+    // Absent from a save written before roles existed, which System.Text.Json leaves at the default
+    // - Digger. That is the right answer for an old colony: the first rebalance after the load
+    // moves whoever is needed onto the other trades. No version bump, because SaveSlot.IsReadable
+    // compares versions exactly and raising it would grey out every save anybody already has.
+    public AntRole Role { get; set; }
 }
 
 public class BroodSave

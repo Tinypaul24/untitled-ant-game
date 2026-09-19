@@ -39,6 +39,8 @@ public partial class ColonyUI : CanvasLayer
     private Button colonyButton;
     private Control colonyPanel;
     private Label workDetail;
+    private Label foragerLabel;
+    private Label builderLabel;
     private Label larderDetail;
     private Label logDetail;
 
@@ -102,6 +104,8 @@ public partial class ColonyUI : CanvasLayer
         colonyButton = GetNode<Button>("ThemeRoot/BottomBar/Actions/ColonyButton");
         colonyPanel = GetNode<Control>("ThemeRoot/ColonyPanel");
         workDetail = GetNode<Label>("ThemeRoot/ColonyPanel/ColonyBox/WorkDetail");
+        foragerLabel = GetNode<Label>("ThemeRoot/ColonyPanel/ColonyBox/ForagerRow/ForagerLabel");
+        builderLabel = GetNode<Label>("ThemeRoot/ColonyPanel/ColonyBox/BuilderRow/BuilderLabel");
         larderDetail = GetNode<Label>("ThemeRoot/ColonyPanel/ColonyBox/LarderDetail");
         logDetail = GetNode<Label>("ThemeRoot/ColonyPanel/ColonyBox/LogDetail");
 
@@ -141,6 +145,17 @@ public partial class ColonyUI : CanvasLayer
 
         // Toggle the build tray, and start placement when a building is chosen.
         colonyButton.Toggled += pressed => colonyPanel.Visible = pressed;
+
+        // The colony's one real allocation decision. Diggers are the remainder, so there is nothing
+        // to set for them - and nothing the player can do to leave a worker with no trade at all.
+        GetNode<Button>("ThemeRoot/ColonyPanel/ColonyBox/ForagerRow/ForagerFewer").Pressed +=
+            () => colonyManager.SetForagerQuota(colonyManager.ForagerQuota - 1);
+        GetNode<Button>("ThemeRoot/ColonyPanel/ColonyBox/ForagerRow/ForagerMore").Pressed +=
+            () => colonyManager.SetForagerQuota(colonyManager.ForagerQuota + 1);
+        GetNode<Button>("ThemeRoot/ColonyPanel/ColonyBox/BuilderRow/BuilderFewer").Pressed +=
+            () => colonyManager.SetBuilderQuota(colonyManager.BuilderQuota - 1);
+        GetNode<Button>("ThemeRoot/ColonyPanel/ColonyBox/BuilderRow/BuilderMore").Pressed +=
+            () => colonyManager.SetBuilderQuota(colonyManager.BuilderQuota + 1);
 
         buildButton.Pressed += ToggleBuildTray;
         nestingChamberButton.Pressed += () => buildManager.BeginPlacement(BuildingType.NestingChamber);
@@ -212,6 +227,9 @@ public partial class ColonyUI : CanvasLayer
 
         work.Sort();
         workDetail.Text = ants == 0 ? "nobody yet" : string.Join("\n", work);
+
+        foragerLabel.Text = $"Foragers {colonyManager.ForagerQuota}";
+        builderLabel.Text = $"Builders {colonyManager.BuilderQuota}";
 
         // Income is the lifetime average, and an in-game hour is sixty seconds, so food per minute
         // and food per hour are the same number - which is the only reason this arithmetic is

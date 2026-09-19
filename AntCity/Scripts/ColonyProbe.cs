@@ -185,6 +185,7 @@ public partial class ColonyProbe : Node
     private void Report()
     {
         var states = new Dictionary<string, int>();
+        var roleCounts = new Dictionary<AntRole, int>();
         int ants = 0;
         int stalled = 0;
 
@@ -201,6 +202,9 @@ public partial class ColonyProbe : Node
             {
                 stalled++;
             }
+
+            roleCounts.TryGetValue(worker.Role, out int held);
+            roleCounts[worker.Role] = held + 1;
 
             string state = worker.DebugState;
             states.TryGetValue(state, out int count);
@@ -227,7 +231,7 @@ public partial class ColonyProbe : Node
         GD.Print($"t={elapsed:F0}s  ants={ants}(counted {colony.Ants})/{colony.Capacity}  food={colony.Food}/{colony.FoodCapacity}  " +
                  $"rooms=[{rooms.Trim()}]  " +
                  $"eggs={colony.Egg} larvae={colony.LarvaCount}  upkeep/hr={colony.UpkeepPerHour}  " +
-                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  stuck={stalled}/{AntWorker.IdleStallRescues}  claims={build.ClaimedDigCellCount}/{build.ObstructionCount}  teams={build.TeamDigCellCount}  trail={pheromones.MarkedCells}  farmed={colony.FoodPerHourFarmed}/hr  mound={MoundTiles()}  spoilUnder={SpoilUnderground() - startingSpoilUnderground}  spoilLeft={AntWorker.SpoilLeftovers}  hauls={AntWorker.HaulTrips}/{AntWorker.HaulsRefused}  reach={SurfaceCellsCutOff()}of{standableSurface}/{startingCutOff}  surf=[{SurfaceProfile()}]  nest={grid.GetTileAt(grid.NestCenterCell)}/{(grid.IsStandable(grid.NestCenterCell) ? "stand" : "BLOCKED")}  [{breakdown.Trim()}]");
+                 $"dug={CountTunnels() - startingTunnels}  stalls={AntWorker.StallRescues}  stuck={stalled}/{AntWorker.IdleStallRescues}  claims={build.ClaimedDigCellCount}/{build.ObstructionCount}  teams={build.TeamDigCellCount}  trail={pheromones.MarkedCells}  farmed={colony.FoodPerHourFarmed}/hr  mound={MoundTiles()}  spoilUnder={SpoilUnderground() - startingSpoilUnderground}  spoilLeft={AntWorker.SpoilLeftovers}  hauls={AntWorker.HaulTrips}/{AntWorker.HaulsRefused}  reach={SurfaceCellsCutOff()}of{standableSurface}/{startingCutOff}  roles=[D{(roleCounts.TryGetValue(AntRole.Digger, out int d) ? d : 0)} B{(roleCounts.TryGetValue(AntRole.Builder, out int b) ? b : 0)} F{(roleCounts.TryGetValue(AntRole.Forager, out int f) ? f : 0)}]  surf=[{SurfaceProfile()}]  nest={grid.GetTileAt(grid.NestCenterCell)}/{(grid.IsStandable(grid.NestCenterCell) ? "stand" : "BLOCKED")}  [{breakdown.Trim()}]");
     }
 
     // Hauled spoil that has ended up underground, which must be zero.

@@ -562,6 +562,7 @@ public partial class AntWorker : Area2D
             HasDigJob = hasDigJob,
             DigTargetX = digTarget.X,
             DigTargetY = digTarget.Y,
+            Role = Role,
             HasForageTarget = forageTarget.HasValue,
             ForageTargetX = forageTarget?.X ?? 0,
             ForageTargetY = forageTarget?.Y ?? 0,
@@ -580,6 +581,10 @@ public partial class AntWorker : Area2D
         Position = new Vector2(save.X, save.Y);
         moveTarget = Position;
         wanderHome = Position;
+
+        // Set directly rather than through ReassignTo: that puts down the job she is holding and
+        // sends her to GoIdle, which is exactly wrong in the middle of restoring one.
+        Role = save.Role;
 
         // A loaded ant starts from rest. Velocity is not saved - it is a tenth of a second of
         // state, not something a player would notice restored, and carrying a stale one over would
@@ -882,6 +887,87 @@ public partial class AntWorker : Area2D
         legDirection = Vector2.Zero;
     }
 
+    // What she is for. Assigned by ColonyManager to meet the player's quotas; see AntRole.
+    public AntRole Role { get; set; } = AntRole.Digger;
+
+    // Moved onto a different trade.
+    //
+    // She may be halfway through work her new role would never have taken on, so the job is put
+    // down properly rather than abandoned in place: AbandonCurrentJob is what hands the dig cell
+    // and the room back to the board, and without it a reassignment leaks a claim that nobody ever
+    // releases. Then she picks again, which she must - leaving her mid-task with a new role is how
+    // an ant ends up frozen.
+    public void ReassignTo(AntRole role)
+    {
+        if (Role == role)
+        {
+            return;
+        }
+
+        Role = role;
+
+        AbandonCurrentJob();
+        StopCurrentTask();
+        GoIdle();
+    }
+
+    // Full, with nowhere above ground to empty out: no more cutting until that changes.
+    private bool CanDigMore => carriedGrains.Count < HaulCapacityGrains || !nowhereToTip;
+
+    private bool TryOwnTrade()
+    {
+        return Role switch
+        {
+            AntRole.Builder => TryFurnishWork(),
+            AntRole.Forager => TryForageWork(),
+            _ => TryDigWork(),
+        };
+    }
+
+    // Everybody else's, in the order that keeps a colony alive: feed it, finish what it has already
+    // paid for, then start something new.
+    private bool TryAnyTrade()
+    {
+        return TryForageWork() || TryFurnishWork() || TryDigWork();
+    }
+
+    private bool TryDigWork()
+    {
+        if (!CanDigMore || !buildManager.TryClaimRoomDigJob(Position, out Vector2I cell))
+        {
+            return false;
+        }
+
+        claimedJobCell = cell;
+        IssueDigCommand(cell, cell);
+
+        return true;
+    }
+
+    private bool TryFurnishWork()
+    {
+        if (!buildManager.TryClaimFurnishJob(Position, out Room room))
+        {
+            return false;
+        }
+
+        CommandBuild(room);
+
+        return true;
+    }
+
+    private bool TryForageWork()
+    {
+        if (!gridManager.TryFindForageTarget(Position, ForageSightTiles * gridManager.CellSize, out Vector2I food))
+        {
+            return false;
+        }
+
+        CommandForage(food);
+
+        return true;
+    }
+
     private void GoIdle()
     {
         BecomeIdle();
@@ -906,38 +992,38 @@ public partial class AntWorker : Area2D
             return;
         }
 
-        // Full, with nowhere to empty out: no more digging until that changes.
-        bool canCarryMore = carriedGrains.Count < HaulCapacityGrains || !nowhereToTip;
-
-        if (canCarryMore && buildManager.TryClaimDigJob(Position, out Vector2I cell))
-        {
-            claimedJobCell = cell;
-            IssueDigCommand(cell, cell);
-            return;
-        }
-
-        // Finishing a room the player asked for and paid for comes before foraging.
+        // A blocked passage, whatever she is for.
         //
-        // It used to come after, and foraging practically never fails - the world is full of food, so
-        // there was always somewhere to go. Rooms reached the furnishing stage and sat there forever
-        // while every worker wandered off to fetch another seed.
-        if (buildManager.TryClaimFurnishJob(Position, out Room room))
+        // The one job no allocation may switch off: the passage can be the only route in or out,
+        // and a colony that has put every worker on foraging duty must not be able to wall itself
+        // in and then walk past the wall for the rest of the game.
+        // Note the absence of CanDigMore. Gating this on having somewhere to put the spoil
+        // deadlocks the colony, and it was measured doing exactly that: the doorstep caves in, so
+        // nobody can reach the surface, so everybody is full, so nobody will dig - including the
+        // cave-in that is the reason they cannot reach the surface. Five obstructions on the board,
+        // nothing claimed, nothing dug for forty-five seconds.
+        //
+        // A worker who is already full and cuts through a blockage loses that chip of earth, since
+        // the grain loop stops collecting at capacity. A handful of cells is a price worth paying
+        // to not be walled in forever.
+        if (buildManager.TryClaimObstruction(Position, out Vector2I blocked))
         {
-            CommandBuild(room);
+            claimedJobCell = blocked;
+            IssueDigCommand(blocked, blocked);
             return;
         }
 
-        // Bodies first. A corpse in a corridor is in the way, and carrying it out is quick.
+        // Bodies next. A corpse in a corridor is in the way, and carrying it out is quick.
         if (TryRemoveCorpse())
         {
             return;
         }
 
-        // Food is the one thing the colony always needs, and nobody else is going to fetch it. An idle
-        // worker goes looking rather than milling about, which is what lets the colony feed itself.
-        if (gridManager.TryFindForageTarget(Position, ForageSightTiles * gridManager.CellSize, out Vector2I food))
+        // Then her own trade, and then everybody else's before she will stand about. See AntRole:
+        // the quota decides who reaches a job first, which is all it needs to do - digging is
+        // effectively bottomless, so a colony of all diggers still starves.
+        if (TryOwnTrade() || TryAnyTrade())
         {
-            CommandForage(food);
             return;
         }
 
