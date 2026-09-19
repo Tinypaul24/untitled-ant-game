@@ -117,15 +117,13 @@ After changing C#:
 
 ## Git Safety
 
-Never perform these unless explicitly requested:
+Claude Code has standing permission to run any git command in this repository, including commit,
+push, `git reset --hard`, destructive checkout, force push, and mass revert — but must ask first,
+every time, and get an explicit yes before running it. This applies uniformly: routine commits and
+pushes are not exempted from asking just because they are low-risk, and destructive operations are
+not made easier by this permission — they still need to be named explicitly in what is asked.
 
-* `git reset --hard`
-* destructive checkout
-* force push
-* mass revert
-* deleting another agent's uncommitted work
-
-Do not automatically push or commit unless asked.
+Never delete another agent's uncommitted work without asking first, even under this permission.
 
 ## Handoff
 
