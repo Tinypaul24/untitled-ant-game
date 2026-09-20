@@ -48,6 +48,8 @@ public partial class TerrainTests : Node
         PullingDownARoomDoesNotStrandItsBuilder();
         ReleasingAClaimKeepsTheJob();
         ARoomGivesUpOnGroundThatTurnedToRock();
+        RoomsExcavateInPlacementOrder();
+        RoomsSkipARoomWithNoReachableCell();
         AStarvedAntTakesHerClaimsWithHer();
         SmoothedRoutesStayWalkable();
         RoutesDoNotBobUpAndDown();
@@ -1311,6 +1313,212 @@ public partial class TerrainTests : Node
         Check(placed.CellCount == cellsBefore - 1, "and stops counting it as its own",
             $"{cellsBefore} became {placed.CellCount}");
     }
+
+    // The board picks up marked ground before it invents its own work, and the same principle
+    // extends to rooms: whichever chamber the player laid out first should get worked first, even
+    // if a later chamber happens to be right under an idle ant's feet. Only once the first chamber
+    // has no capacity left (every remaining cell at MaxDiggersPerCell) should work spill over to
+    // the next one in line.
+    private void RoomsExcavateInPlacementOrder()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+
+        colony.AddFood(300);
+
+        // Earlier tests share this same board and can leave rooms mid-excavation behind them. Man
+        // every cell they still have open before placing this test's own rooms, so placement order
+        // among THIS test's rooms is the only thing left to decide a claim.
+        Vector2 fromNest = grid.CellToWorld(grid.NestCenterCell);
+
+        for (int drained = 0; drained < 4000 && build.TryClaimRoomDigJob(fromNest, out _); drained++)
+        {
+        }
+
+        // Same row, so the corridor between them is a straight left/right line rather than a
+        // diagonal ramp - simple to guarantee clean (see below) and cheap for the router to plan.
+        Vector2I origin1 = FindDiggableNear(grid.NestCenterCell + new Vector2I(100, 8));
+        Vector2I origin2 = FindDiggableNear(grid.NestCenterCell + new Vector2I(112, 8));
+
+        // Rock is common enough in this world (small areas have roughly a nine-in-ten chance of
+        // containing some - see BuildManager's MaxDiggersPerCell comment) that leaving the gap
+        // between the two rooms to natural generation risks an incidental wall blocking the very
+        // route this test needs to exist. Force it clean instead, so the test is about priority
+        // order, not world-gen luck.
+        for (int x = origin1.X + 3; x < origin2.X; x++)
+        {
+            grid.SetTileFromSimulation(new Vector2I(x, origin1.Y + 1), GridManager.TileType.Dirt);
+            grid.SetTileFromSimulation(new Vector2I(x, origin1.Y + 2), GridManager.TileType.Dirt);
+        }
+
+        // Dig all but one cell of each footprint, so each room has exactly one cell left pending -
+        // easy to fully man and easy to identify. Force that one cell to solid ground first, since
+        // FindDiggableNear only promises the origin itself is diggable, not the rest of the layout.
+        Vector2I pendingLocal = new Vector2I(2, 1);
+
+        grid.SetTileFromSimulation(origin1 + pendingLocal, GridManager.TileType.Dirt);
+        grid.SetTileFromSimulation(origin2 + pendingLocal, GridManager.TileType.Dirt);
+
+        for (int x = 0; x < 3; x++)
+        {
+            for (int y = 0; y < 2; y++)
+            {
+                if (new Vector2I(x, y) != pendingLocal)
+                {
+                    grid.Dig(origin1 + new Vector2I(x, y));
+                    grid.Dig(origin2 + new Vector2I(x, y));
+                }
+            }
+        }
+
+        materials.DeriveDirtyTiles();
+
+        if (!build.TryCreateRoom(new Rect2I(origin1, new Vector2I(3, 2)), BuildingType.Granary))
+        {
+            Check(false, "the first room could be placed");
+            return;
+        }
+
+        if (!build.TryCreateRoom(new Rect2I(origin2, new Vector2I(3, 2)), BuildingType.Granary))
+        {
+            Check(false, "the second room could be placed");
+            return;
+        }
+
+        Vector2I pendingCell1 = origin1 + pendingLocal;
+        Vector2I pendingCell2 = origin2 + pendingLocal;
+
+        // Ask for work standing right on top of the second (later-placed) room's own cell - as
+        // close as an ant can be to it - while the first room's cell is dozens of tiles away.
+        Vector2 fromSecondRoom = grid.CellToWorld(pendingCell2);
+
+        for (int i = 0; i < 4; i++)
+        {
+            bool found = build.TryClaimRoomDigJob(fromSecondRoom, out Vector2I claimed);
+
+            Check(found && claimed == pendingCell1,
+                $"claim {i + 1} goes to the first room despite standing on the second",
+                $"found={found} claimed={claimed}");
+        }
+
+        // The first room's only cell is now fully manned - the fifth claim has nowhere to go there.
+        bool overflowed = build.TryClaimRoomDigJob(fromSecondRoom, out Vector2I overflowCell);
+
+        Check(overflowed && overflowCell == pendingCell2,
+            "once the first room is fully manned, work spills over to the second",
+            $"found={overflowed} claimed={overflowCell}");
+    }
+
+    // Placement order is a priority, not a lock: a chamber the colony has no way to reach yet must
+    // not freeze every other room out forever. Sealed in rock on every side (not merely far away -
+    // PlanDigRoute happily carves fresh corridors over distance, so "far" isn't "impossible"), this
+    // room's one cell can never be approached from any angle, and a claim has to skip it outright.
+    private void RoomsSkipARoomWithNoReachableCell()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+
+        colony.AddFood(300);
+
+        Vector2 fromNest = grid.CellToWorld(grid.NestCenterCell);
+
+        for (int drained = 0; drained < 4000 && build.TryClaimRoomDigJob(fromNest, out _); drained++)
+        {
+        }
+
+        // Same row and a modest, explicitly-cleared gap - see RoomsExcavateInPlacementOrder for why
+        // (sharing an X needs an exact zigzag to connect, and natural rock density can block a long
+        // gap outright; neither is what this test is about). Clear of every other test's offsets
+        // (this file has rooms scattered at -170..160 - collided with one at -90 the first time).
+        Vector2I origin1 = FindDiggableNear(grid.NestCenterCell + new Vector2I(200, 8));
+        Vector2I origin2 = FindDiggableNear(grid.NestCenterCell + new Vector2I(212, 8));
+        Vector2I pendingLocal = new Vector2I(2, 1);
+
+        grid.SetTileFromSimulation(origin1 + pendingLocal, GridManager.TileType.Dirt);
+        grid.SetTileFromSimulation(origin2 + pendingLocal, GridManager.TileType.Dirt);
+
+        for (int x = 0; x < 3; x++)
+        {
+            for (int y = 0; y < 2; y++)
+            {
+                if (new Vector2I(x, y) != pendingLocal)
+                {
+                    grid.Dig(origin1 + new Vector2I(x, y));
+                    grid.Dig(origin2 + new Vector2I(x, y));
+                }
+            }
+        }
+
+        for (int x = origin1.X + 3; x < origin2.X; x++)
+        {
+            grid.SetTileFromSimulation(new Vector2I(x, origin1.Y + 1), GridManager.TileType.Dirt);
+            grid.SetTileFromSimulation(new Vector2I(x, origin1.Y + 2), GridManager.TileType.Dirt);
+        }
+
+        // Wall the first room's one pending cell in on all eight sides - no direction can ever
+        // reach it, regardless of how far a corridor is allowed to run. This overrides part of the
+        // cleared gap above, deliberately - the seal has to actually block the direct approach.
+        Vector2I pendingCell1 = origin1 + pendingLocal;
+
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                if (dx != 0 || dy != 0)
+                {
+                    grid.SetTileFromSimulation(pendingCell1 + new Vector2I(dx, dy), GridManager.TileType.Rock);
+                }
+            }
+        }
+
+        materials.DeriveDirtyTiles();
+
+        if (!build.TryCreateRoom(new Rect2I(origin1, new Vector2I(3, 2)), BuildingType.Granary))
+        {
+            Check(false, "the sealed room could be placed");
+            return;
+        }
+
+        if (!build.TryCreateRoom(new Rect2I(origin2, new Vector2I(3, 2)), BuildingType.Granary))
+        {
+            Check(false, "the reachable room could be placed");
+            return;
+        }
+
+        Vector2I pendingCell2 = origin2 + pendingLocal;
+        Vector2 fromSecondRoom = grid.CellToWorld(pendingCell2);
+
+        bool found = build.TryClaimRoomDigJob(fromSecondRoom, out Vector2I claimed);
+
+        Check(found && claimed == pendingCell2,
+            "a sealed-in first room is skipped in favour of a reachable second one",
+            $"found={found} claimed={claimed}");
+
+        // Free the seal - the first room's cell is now genuinely reachable. If every claim paid
+        // for a fresh pathfinding search, this would immediately flip back to the first room. It
+        // must not: a room the colony just found unreachable stays deprioritised for a short
+        // cooldown, so hundreds of idle workers checking the same blocked room every tick cannot
+        // each pay for their own full search of it, moments apart, for as long as it stays blocked.
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                if (dx != 0 || dy != 0)
+                {
+                    grid.SetTileFromSimulation(pendingCell1 + new Vector2I(dx, dy), GridManager.TileType.Dirt);
+                }
+            }
+        }
+
+        materials.DeriveDirtyTiles();
+
+        bool foundAgain = build.TryClaimRoomDigJob(fromSecondRoom, out Vector2I claimedAgain);
+
+        Check(foundAgain && claimedAgain == pendingCell2,
+            "a just-cleared room stays deprioritised for a short cooldown rather than being rechecked immediately",
+            $"found={foundAgain} claimed={claimedAgain}");
+    }
+
     // Pulling a room down out from under the worker furnishing it.
     //
     // Demolish frees the Room node, and a freed Godot node leaves a live C# wrapper behind - so the

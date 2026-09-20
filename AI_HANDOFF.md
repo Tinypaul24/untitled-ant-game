@@ -1,101 +1,109 @@
 ## Branch
 
-Use the currently checked-out Git branch (`game-rework` as of this writing).
+Use the currently checked-out Git branch (`main`, with dig-designation now merged in via `game-rework`).
 
 ## Current Goal
 
-Player-directed excavation: let the player draw ("mark") tunnels for diggers to cut, instead of
-diggers only choosing targets on their own. Part of the broader "player decides what the workers
-are for" direction (see recent commit history). The feature itself shipped in `095fca9`; this
-session was its first-ever runtime playtest, which surfaced a priority gap (below) that is now
-understood and either fixed or deliberately left as-is per the user's call. **No new goal has been
-picked yet** - ask the user what's next.
+Room placement priority: rooms should excavate in the order they were placed, same "player decides"
+principle as dig-designation tunnels, with soft overflow to the next room once the current one has
+no capacity or reachable cell left. **This goal is now complete, verified live, and ready to
+commit.** No new goal has been picked yet - ask the user what's next.
 
 ## Completed Work
 
-- **First runtime playtest of dig-designation**, done live with the user in the Godot editor:
-  - Marking a rectangle and seeing the tint appear: confirmed working.
-  - Diggers picking up and cutting marked cells: **initially looked broken** - the user watched two
-    ants go idle for a moment and then resume whatever they were doing, apparently ignoring the
-    marked tunnel entirely.
-- **Root-caused the apparent bug**, using `superpowers:systematic-debugging`. Built a headless
-  probe (`AntCity/Scripts/DesignationProbe.cs` + `AntCity/Scenes/DesignationCheck.tscn`, run via
-  `godot --headless --path . res://AntCity/Scenes/DesignationCheck.tscn`, same pattern as
-  `ColonyProbe`/`StarveProbe`) to reproduce it without needing a human to drag a rectangle. Added a
-  test-only `BuildManager.MarkForDiggingForTest(Rect2I)` hook (mirrors the existing
-  `PreviewForTest`) so the probe can mark cells directly.
-  - Confirmed via temporary instrumentation (since removed) that `TryClaimDesignation` itself works
-    correctly: a `Digger`-role ant does find and claim a freshly marked cell, gets a valid
-    `PlanDigRoute`, and eventually digs it (probe PASS after ~75 sim-seconds for a cell 17 tiles
-    from the claiming ant).
-  - **Actual root cause**: `AntWorker.GoIdle()` runs `TryOwnTrade() || TryAnyTrade()`. For a
-    `Forager` or `Builder`, `TryOwnTrade()` only tries their own trade (forage/build) - it never
-    looks at `TryClaimRoomDigJob` (where the designation-priority check lives) unless that
-    own-trade attempt fails first. So any idle ant currently holding a non-Digger role, with her
-    own work available, never even glances at a marked tunnel - confirmed directly in the
-    instrumented log (`TryOwnTrade=True` → `took OwnTrade/AnyTrade`, no `TryClaimDesignation` call
-    at all). This is unlike cave-in clearing (`TryClaimObstruction`), which deliberately runs
-    unconditionally ahead of `TryOwnTrade` for every role. The two ants the user watched almost
-    certainly were not holding the Digger role at that moment.
-  - Presented this to the user with three options (make designations role-agnostic like
-    obstructions; elevate them earlier in `TryAnyTrade`; or leave the mechanism and fix
-    expectations instead). **User chose: leave the mechanism as-is, fix expectations only.**
-- **Fix applied**: updated the Dig button's tooltip in `AntCity/Scenes/Main.tscn` to say a marked
-  tunnel waits for a free digger and won't pull an ant off foraging or building, so it can sit a
-  while if nobody is free. No priority-logic changes.
-- **Kept the probe as permanent regression infrastructure** (user's call): cleaned it up to match
-  the plain `GD.Print` style of `ColonyProbe`/`StarveProbe`, widened its timeout from 30s to 120s
-  sim-time after the first run showed a solo claiming ant can legitimately take that long for a
-  cell far from her, and re-ran it to confirm a clean PASS. All temporary `[TEMPDBG]` instrumentation
-  and the file-based `ProbeLog` workaround (needed only because the connected MCP debug-output
-  capture wasn't surfacing `GD.Print` from a `run_scene` session) were removed afterward -
-  `AntWorker.cs` is back to its pre-investigation state; `BuildManager.cs` only keeps the
-  `MarkForDiggingForTest` hook.
-- `dotnet build` passed clean after every change in this session, including the final state.
+- **Room placement priority** (`BuildManager.TryClaimRoomDigJob`): rooms now excavate in placement
+  order - `rooms` is already an insertion-ordered `List<Room>`, so the first `Excavating` room with
+  any capacity wins outright; a room only lets the next one in line take a claim once it has nothing
+  left to give. TDD test `RoomsExcavateInPlacementOrder` in `TerrainTests.cs` proves placement order
+  beats raw distance and that overflow triggers once a room is fully manned.
+- **Regression found in first live playtest and fixed**: a room placed on ordinary, ready-to-be-dug
+  solid ground (the completely normal way every room starts) could still be temporarily unreachable
+  (surrounded by rock, or just not yet in reach of the router's search budget). Under strict
+  placement priority, that let one such room monopolise every idle worker forever - each one
+  claiming its cell, failing `PlanDigRoute`, abandoning, and immediately re-claiming it. Symptoms
+  live: total freeze, severe lag, and ants visibly picking up and dropping the same dirt in a loop.
+  Root-caused with `superpowers:systematic-debugging`, confirmed via temporary instrumentation and a
+  throwaway headless/live-ticking stress probe (since removed). Fixed by adding a reachability check
+  (`GridManager.PlanDigRoute`) into the room-claim loop: a room's candidate that can't currently be
+  routed to is excluded for this attempt, and the search moves on to its next candidate or the next
+  room. TDD test `RoomsSkipARoomWithNoReachableCell` (walls a room's one cell in with rock on all
+  eight sides - not merely far away, since `PlanDigRoute` will happily carve long corridors over
+  distance - so unreachability is unambiguous, not incidental).
+- **Second regression found via a live-ticking stress probe** (the static test suite never yields a
+  frame, so it couldn't have caught this): the reachability check above, while correct, has no
+  memory - every idle worker's claim attempt against a currently-blocked cell pays for a full
+  ~6000-node `PlanDigRoute` search, every time, with no caching. Measured directly (temporary call
+  counters on `PlanDigRoute`): one 10-second window burned 200,000-320,000 visited nodes *per
+  second* with zero successful claims the entire time - not a livelock, but a severe, real,
+  repeated performance cost that could still look exactly like the original complaint. Fixed with a
+  short (3-second) per-cell cooldown cache (`BuildManager.unreachableUntilUsec`, `Time.GetTicksUsec()`
+  - the same wall-clock pattern already used by `CameraController`/`FrameProbe`/`MiniMap`): a cell
+  that just failed a route plan is skipped without re-asking for the cooldown window. Verified with
+  the same stress probe: the sustained multi-second spike cluster is gone; only isolated, non-
+  repeating single-frame spikes remain when a genuinely new candidate is checked for the first time.
+  TDD test extends `RoomsSkipARoomWithNoReachableCell`: after the seal is removed (cell now
+  genuinely reachable), an immediate second claim still goes to the other room, proving the negative
+  result is cached rather than freshly re-evaluated.
+- **User confirmed live**: no lag, no freeze, placing two ordinary disconnected rooms works
+  correctly after both fixes.
+- `dotnet build` and the full `TerrainTests.cs` suite (170 checks) pass clean at every step, verified
+  repeatedly (one flaky, pre-existing, unrelated failure - `PilesPackIntoSolidGround`'s spoil-tipping
+  check - was observed once and confirmed non-reproducing on an identical immediate rerun; not
+  touched, not caused by this work).
 
 ## Files Changed
 
-- `AntCity/Scripts/Buildings/BuildManager.cs` - added `MarkForDiggingForTest(Rect2I)` (test-only
-  hook, no behavior change).
-- `AntCity/Scenes/Main.tscn` - `DigButton` tooltip now explains that marked tunnels wait for a free
-  digger.
-- `AntCity/Scripts/DesignationProbe.cs` (new) - headless regression probe for dig-designations.
-- `AntCity/Scenes/DesignationCheck.tscn` (new) - runs `DesignationProbe` against `Main.tscn`, same
-  pattern as `ColonyCheck.tscn`/`StarveCheck.tscn`.
-- `AntCity/Scenes/Entities/AntWorker.cs` - touched during investigation, fully reverted; no net
-  diff.
-- `AI_HANDOFF.md` - this file; removed the stale "Current Test" handoff-confirmation section now
-  that a session has picked up from it.
+- `AntCity/Scripts/Buildings/BuildManager.cs` - `TryClaimRoomDigJob` now claims in placement order
+  with reachability-checked overflow, backed by a short-lived per-cell unreachability cache
+  (`unreachableUntilUsec` / `IsRecentlyUnreachable` / `TryPlanRoute`).
+- `AntCity/Scripts/TerrainTests.cs` - `RoomsExcavateInPlacementOrder` and
+  `RoomsSkipARoomWithNoReachableCell` (three checks total, the latter now also covering the cache).
+- `AntCity/Scripts/World/GridManager.Navigation.cs`, `AntCity/Scripts/RoomPriorityStressProbe.cs`,
+  `AntCity/Scenes/RoomPriorityStress.tscn` - touched/created during investigation as temporary
+  diagnostics, all fully reverted/removed; no net diff.
 
 ## Important Decisions
 
-- Dig-designation's job-priority behavior (Forager/Builder own-trade outranks a marked tunnel)
-  is **intentional, left unchanged** - the user explicitly chose "leave the mechanism, fix
-  expectations instead" over making it role-agnostic like obstruction-clearing. If this comes up
-  again, don't re-litigate it without the user raising it.
-- `DesignationProbe`/`DesignationCheck.tscn` are kept as permanent gameplay-probe infrastructure
-  (user's call), not a throwaway diagnostic - same standing as `ColonyProbe`/`StarveProbe`. Its
-  `TimeoutSeconds` (120 sim-seconds) is deliberately generous because the claiming ant can be
-  anywhere in the colony's tunnels, not just adjacent to the mark.
-- Designations remain a separate obstruction set from `claimedDigCells`/`obstructions` (prior
-  decision, unchanged) - see the feature's original commit `095fca9` for the rest of that
-  reasoning.
+- Room priority is **soft**, matching the dig-designation precedent: placement order wins by
+  default, but a room with no capacity or no currently-reachable cell yields to the next one in
+  line rather than blocking the colony. This was the user's explicit choice when the tradeoff was
+  presented.
+- The unreachability cache lives on `BuildManager`, not `GridManager` - it's specific to the
+  claim-selection use case, not a general property of pathfinding. `GridManager.PlanDigRoute` itself
+  is unchanged.
+- Cooldown is 3 real seconds, chosen as long enough to matter under many simultaneous idle workers,
+  short enough that a corridor finished a moment ago is picked up again quickly. Not user-configurable;
+  revisit only if evidence says otherwise.
 
 ## Known Problems / Unverified
 
-- The connected Godot MCP plugin's `get_debug_output` did not surface any `GD.Print` output during
-  this session, from either `run_project` or `run_scene` sessions - worth a look if future
-  debugging wants to rely on it rather than the file-write workaround used (and then removed) here.
-- Nothing else outstanding for dig-designation - see "Completed Work" above; the full original
-  playtest checklist is now done, live with the user: right-click cancels marking, Build tray and
-  Dig disarm each other in both directions, designations survive an actual save/quit/load cycle,
-  and more than one ant can cooperatively dig a single designated cell.
+- Isolated single-frame spikes (~200-360ms) can still occur when a room's candidate is checked for
+  the very first time and turns out to be unreachable - the cache only helps on repeat checks of the
+  *same* cell. A colony with several simultaneously-unreachable rooms could produce a cluster of
+  first-time spikes within the same second. Not treated as a bug - flagged as an accepted tradeoff,
+  not silently hidden.
+- **New, separate issue reported live by the user, not yet investigated**: after the game runs for a
+  while, ants can end up hauling dirt "from the top" back and forth in what the user describes as an
+  infinite loop. Not yet root-caused. Given this session's pattern (a claim/abandon cycle that drops
+  and immediately re-picks-up carried material - see `StopCurrentTask`'s
+  `DropCarriedGrains`/`TryHaulSpoil` interaction), this smells like the same *family* of bug just
+  fixed for rooms - some other job-claiming path (spoil-hauling destination selection, most likely
+  `GridManager.FindSpoilDropOff`, or another claim/abandon loop) may have an analogous
+  claim-without-a-persistence-check problem. This is a guess, not a diagnosis - needs its own
+  `superpowers:systematic-debugging` pass with real repro/instrumentation before touching code,
+  the same way the two fixes above were found. Do not guess-fix this from the description alone.
 
 ## Unfinished Work
 
-None identified for dig-designation - it has now had a full manual playtest in addition to the
-automated probe. No new goal has been picked yet - ask the user what's next.
+- The new hauling back-and-forth issue above - next candidate for investigation, if the user wants
+  to pursue it next.
+- No other new goal has been picked yet - ask the user what's next.
 
 ## Exact Recommended Next Step
 
-Ask the user what the next goal is; nothing is currently queued.
+1. Commit the room-placement-priority work (ask first, per Git Safety) - it's complete and verified.
+2. If the user wants to pursue the hauling back-and-forth issue next, start with
+   `superpowers:systematic-debugging`: get a live repro, check `AntWorker.TryHaulSpoil`,
+   `GridManager.FindSpoilDropOff`, and `StopCurrentTask`'s drop/pickup interaction, and build a
+   probe (live-ticking, not the static test suite - the room-priority second regression was
+   invisible to static tests) before proposing any fix.

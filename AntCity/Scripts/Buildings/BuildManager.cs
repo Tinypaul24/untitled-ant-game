@@ -399,8 +399,22 @@ public partial class BuildManager : Node2D
 
         cell = default;
         bool found = false;
-        float bestDistance = float.MaxValue;
+        Vector2I fromCell = GridManager.WorldToCell(fromPosition);
 
+        // Whichever chamber the player laid out first gets worked first - `rooms` is already in
+        // placement order, so the first Excavating room with any capacity left wins outright, and
+        // only a room with nothing left to give lets the next one in line take a claim. Same
+        // batch/overflow shape as TryClaimDesignation, just keyed off list position instead of an
+        // explicit batch number.
+        //
+        // "Nothing left to give" is manned-out cells OR cells nobody can currently reach - not just
+        // the former. A chamber the colony hasn't dug its way to yet is placed before it is
+        // connected to anything, same as every room ever has been; without the reachability check
+        // that ordinary, expected case let one far-off chamber monopolise every idle worker in the
+        // colony forever, each one claiming its cell, failing to plan a route, abandoning, and
+        // immediately re-claiming it - busywork instead of digging, and nothing else ever got
+        // touched. A room's own pending cells are few (footprint is capped small), so trying each
+        // in turn here costs nothing next to that.
         foreach (Room room in rooms)
         {
             if (room.State != Room.RoomState.Excavating)
@@ -408,21 +422,50 @@ public partial class BuildManager : Node2D
                 continue;
             }
 
-            foreach (Vector2I candidate in room.PendingDigCells)
+            var excluded = new HashSet<Vector2I>();
+
+            while (true)
             {
-                if (IsFullyManned(candidate))
+                Vector2I candidateCell = default;
+                float bestDistance = float.MaxValue;
+                bool haveCandidate = false;
+
+                foreach (Vector2I candidate in room.PendingDigCells)
                 {
+                    if (IsFullyManned(candidate) || excluded.Contains(candidate))
+                    {
+                        continue;
+                    }
+
+                    float distance = GridManager.CellToWorld(candidate).DistanceSquaredTo(fromPosition);
+
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        candidateCell = candidate;
+                        haveCandidate = true;
+                    }
+                }
+
+                if (!haveCandidate)
+                {
+                    break;
+                }
+
+                if (IsRecentlyUnreachable(candidateCell) || !TryPlanRoute(fromCell, candidateCell))
+                {
+                    excluded.Add(candidateCell);
                     continue;
                 }
 
-                float distance = GridManager.CellToWorld(candidate).DistanceSquaredTo(fromPosition);
+                cell = candidateCell;
+                found = true;
+                break;
+            }
 
-                if (distance < bestDistance)
-                {
-                    bestDistance = distance;
-                    cell = candidate;
-                    found = true;
-                }
+            if (found)
+            {
+                break;
             }
         }
 
@@ -432,6 +475,34 @@ public partial class BuildManager : Node2D
         }
 
         return found;
+    }
+
+    // How long a cell that just failed a route plan is skipped without asking again.
+    //
+    // Blocked cells stay blocked for a while, not an instant - a colony can easily have a dozen
+    // idle workers each ask the job board within the same second, and without this every one of
+    // them pays for its own full search of the same cell, moments apart, for as long as it stays
+    // cut off. Long enough to matter, short enough that a corridor finished a moment ago is picked
+    // up again quickly rather than sitting idle on a stale answer.
+    private const ulong UnreachableCooldownUsec = 3_000_000;
+
+    private readonly Dictionary<Vector2I, ulong> unreachableUntilUsec = new();
+
+    private bool IsRecentlyUnreachable(Vector2I cell)
+    {
+        return unreachableUntilUsec.TryGetValue(cell, out ulong until) && Time.GetTicksUsec() < until;
+    }
+
+    private bool TryPlanRoute(Vector2I fromCell, Vector2I goal)
+    {
+        if (GridManager.PlanDigRoute(fromCell, goal) != null)
+        {
+            return true;
+        }
+
+        unreachableUntilUsec[goal] = Time.GetTicksUsec() + UnreachableCooldownUsec;
+
+        return false;
     }
 
     // Cells no room is ever going to get, found and let go.
