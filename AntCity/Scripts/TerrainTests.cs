@@ -28,6 +28,7 @@ public partial class TerrainTests : Node
         GD.Print("--- terrain tests ---");
 
         StartingWorldIsWalkable();
+        TheFoundingChamberCanWalkHome();
         MatterIsConserved();
         PilesPackIntoSolidGround();
         SleepBookkeepingStaysHonest();
@@ -85,6 +86,34 @@ public partial class TerrainTests : Node
             {
                 Check(grid.IsStandable(grid.WorldToCell(ant.Position)), $"ant spawned somewhere it can stand");
             }
+        }
+    }
+
+    // Every worker starts at the bottom of the founding shaft, and the whole colony depends on her
+    // being able to walk back up it: spoil only leaves the burrow in somebody's mandibles, and a
+    // drop-off is only viable above the turf. Standing somewhere standable is not enough - the
+    // check above passed for a colony sealed in a pocket, because the chamber floor is perfectly
+    // standable and the route home is what was missing.
+    private void TheFoundingChamberCanWalkHome()
+    {
+        Vector2I nest = grid.NestCenterCell;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is not AntWorker ant)
+            {
+                continue;
+            }
+
+            Vector2I here = grid.WorldToCell(ant.Position);
+
+            Check(grid.FindTunnelPath(here, nest) != null,
+                "a worker can walk home from where she starts", $"stranded at {here}");
+
+            Vector2I dropOff = grid.FindSpoilDropOff(here);
+
+            Check(grid.IsViableSpoilDropOff(dropOff),
+                "and has somewhere she can actually tip a load", $"from {here} got {dropOff}");
         }
     }
 

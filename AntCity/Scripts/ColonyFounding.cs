@@ -215,9 +215,17 @@ public partial class ColonyFounding : Node
         Vector2I floor = surface + new Vector2I(ShaftDepth, ShaftDepth);
 
         // Headroom first, then the floor, so the chamber never briefly looks like a sealed pocket.
+        //
+        // The chamber runs on from the foot of the shaft rather than sitting centred on it. Centred,
+        // it reached back under the last two treads and dug the ground out from beneath them: a
+        // tread with open space below it is not standable, so the only slope an ant can climb was
+        // severed at the moment of founding. Every worker spawned sealed in - unable to walk home,
+        // and therefore unable to reach anywhere above the turf, which is the only place a load may
+        // be tipped. They spent the rest of the game carrying the same spoil around the pocket,
+        // putting it down and picking it back up, while the colony never dug another cell.
         for (int y = -1; y <= 0; y++)
         {
-            for (int x = -ChamberHalfWidth; x <= ChamberHalfWidth; x++)
+            for (int x = 0; x <= ChamberHalfWidth * 2; x++)
             {
                 toDig.Enqueue(floor + new Vector2I(x, y));
             }
