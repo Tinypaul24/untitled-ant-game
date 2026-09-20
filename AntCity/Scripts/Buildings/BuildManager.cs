@@ -300,6 +300,10 @@ public partial class BuildManager : Node2D
         QueueRedraw();
     }
 
+    // Marks cells for digging without synthesising mouse input, so a headless probe can drive it.
+    // Exercises the same commit path a completed drag takes.
+    public void MarkForDiggingForTest(Rect2I area) => MarkForDigging(area);
+
     // Drives the preview to a chosen footprint without synthesising mouse input, so a screenshot
     // harness can photograph it. Exercises the same drag path the UI takes.
     public void PreviewForTest(Rect2I footprint)

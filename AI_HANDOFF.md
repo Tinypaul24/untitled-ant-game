@@ -6,93 +6,100 @@ Use the currently checked-out Git branch (`game-rework` as of this writing).
 
 Player-directed excavation: let the player draw ("mark") tunnels for diggers to cut, instead of
 diggers only choosing targets on their own. Part of the broader "player decides what the workers
-are for" direction (see recent commit history). **This goal is now complete and committed** — see
-below. Next goal is not yet defined; check with the user before picking new work.
+are for" direction (see recent commit history). The feature itself shipped in `095fca9`; this
+session was its first-ever runtime playtest, which surfaced a priority gap (below) that is now
+understood and either fixed or deliberately left as-is per the user's call. **No new goal has been
+picked yet** - ask the user what's next.
 
 ## Completed Work
 
-The dig-designation feature, including save/load persistence, is finished, committed, and merged
-into `game-rework`:
+- **First runtime playtest of dig-designation**, done live with the user in the Godot editor:
+  - Marking a rectangle and seeing the tint appear: confirmed working.
+  - Diggers picking up and cutting marked cells: **initially looked broken** - the user watched two
+    ants go idle for a moment and then resume whatever they were doing, apparently ignoring the
+    marked tunnel entirely.
+- **Root-caused the apparent bug**, using `superpowers:systematic-debugging`. Built a headless
+  probe (`AntCity/Scripts/DesignationProbe.cs` + `AntCity/Scenes/DesignationCheck.tscn`, run via
+  `godot --headless --path . res://AntCity/Scenes/DesignationCheck.tscn`, same pattern as
+  `ColonyProbe`/`StarveProbe`) to reproduce it without needing a human to drag a rectangle. Added a
+  test-only `BuildManager.MarkForDiggingForTest(Rect2I)` hook (mirrors the existing
+  `PreviewForTest`) so the probe can mark cells directly.
+  - Confirmed via temporary instrumentation (since removed) that `TryClaimDesignation` itself works
+    correctly: a `Digger`-role ant does find and claim a freshly marked cell, gets a valid
+    `PlanDigRoute`, and eventually digs it (probe PASS after ~75 sim-seconds for a cell 17 tiles
+    from the claiming ant).
+  - **Actual root cause**: `AntWorker.GoIdle()` runs `TryOwnTrade() || TryAnyTrade()`. For a
+    `Forager` or `Builder`, `TryOwnTrade()` only tries their own trade (forage/build) - it never
+    looks at `TryClaimRoomDigJob` (where the designation-priority check lives) unless that
+    own-trade attempt fails first. So any idle ant currently holding a non-Digger role, with her
+    own work available, never even glances at a marked tunnel - confirmed directly in the
+    instrumented log (`TryOwnTrade=True` → `took OwnTrade/AnyTrade`, no `TryClaimDesignation` call
+    at all). This is unlike cave-in clearing (`TryClaimObstruction`), which deliberately runs
+    unconditionally ahead of `TryOwnTrade` for every role. The two ants the user watched almost
+    certainly were not holding the Digger role at that moment.
+  - Presented this to the user with three options (make designations role-agnostic like
+    obstructions; elevate them earlier in `TryAnyTrade`; or leave the mechanism and fix
+    expectations instead). **User chose: leave the mechanism as-is, fix expectations only.**
+- **Fix applied**: updated the Dig button's tooltip in `AntCity/Scenes/Main.tscn` to say a marked
+  tunnel waits for a free digger and won't pull an ant off foraging or building, so it can sit a
+  while if nobody is free. No priority-logic changes.
+- **Kept the probe as permanent regression infrastructure** (user's call): cleaned it up to match
+  the plain `GD.Print` style of `ColonyProbe`/`StarveProbe`, widened its timeout from 30s to 120s
+  sim-time after the first run showed a solo claiming ant can legitimately take that long for a
+  cell far from her, and re-ran it to confirm a clean PASS. All temporary `[TEMPDBG]` instrumentation
+  and the file-based `ProbeLog` workaround (needed only because the connected MCP debug-output
+  capture wasn't surfacing `GD.Print` from a `run_scene` session) were removed afterward -
+  `AntWorker.cs` is back to its pre-investigation state; `BuildManager.cs` only keeps the
+  `MarkForDiggingForTest` hook.
+- `dotnet build` passed clean after every change in this session, including the final state.
 
-- `095fca9` — "The player draws the tunnels, and the plan survives a save": the full feature.
-  - **`BuildManager.cs`** — `designations` dict (`Vector2I` cell → batch index). `BeginMarking()` /
-    `CancelMarking()` toggle marking mode; `HandleMarkingInput` drives left-drag-to-mark-rectangle,
-    right-click-to-cancel. `TryClaimDesignation` has diggers claim marked cells before falling back
-    to organic dig-target selection, ordered by batch (draw order) then nearest. Designated cells
-    are drawn with a persistent tint (`DesignationTint`) plus a live drag-preview tint
-    (`MarkingTint`). Designations clear per-cell when dug and wholesale on load/reset.
-    `CaptureDesignations()` / `RestoreDesignations(List<int>)` persist them through save/load,
-    packing cell + batch via the existing `AddCell`/`ReadCellValues` helpers (`SaveList.cs`).
-    `RestoreDesignations` re-checks `GridManager.CanDig` per cell on load and bumps `nextDigBatch`
-    past the highest restored batch so newly drawn tunnels queue behind restored ones.
-  - **`AntWorker.cs`** — reads `buildManager.IsDesignated(pendingDigCell)` before the dig completes
-    (digging retires the designation) into `drawnByThePlayer`, which grants two-tile headroom on the
-    player's own dig target cell (an organic corridor's terminal cell normally stays low ceiling).
-  - **`ColonyUI.cs`** — `digButton` (toggle) wired to `BeginMarking`/`CancelMarking`, mutually
-    exclusive with the build tray (each disarms the other, since both consume left-click).
-  - **`Main.tscn`** — `DigButton` node next to `Build`, tooltip explains drag/right-click/draw-order.
-  - **`SaveData.cs`** — `List<int> Designations`, additive/not version-bumped (same precedent as
-    `QueenGrounded`).
-  - **`SaveManager.cs`** — `Capture()`/`Restore()` wired to `CaptureDesignations`/`RestoreDesignations`.
-  - `dotnet build` passed clean at commit time.
-- `14919a3` — "Git commands get a yes first, not a blanket ban": updated `CLAUDE.md`'s Git Safety
-  section from "never commit/push unless asked" to a standing yes for any git command (including
-  destructive ones), conditioned on asking first and getting an explicit answer every time — no
-  exception for routine low-risk commits.
-- Earlier in this thread: renamed `Claude.md`/`AI_Handoff.md`/`Agents.md` to conventional casing
-  (`CLAUDE.md`/`AI_HANDOFF.md`/`AGENTS.md`); now tracked and committed as part of the above.
+## Files Changed
 
-## Files Changed (now committed on `game-rework`, nothing outstanding)
-
-- `AntCity/Scenes/Entities/AntWorker.cs`
-- `AntCity/Scenes/Main.tscn`
-- `AntCity/Scripts/Buildings/BuildManager.cs`
-- `AntCity/Scripts/ColonyUI.cs`
-- `AntCity/Scripts/SaveSystem/SaveData.cs`
-- `AntCity/Scripts/SaveSystem/SaveManager.cs`
-- `project.godot` (godot_mcp editor plugin enabled)
-- `.vscode/settings.json` (`dotnet.defaultSolution` added)
-- `CLAUDE.md`, `AI_HANDOFF.md`, `AGENTS.md`
-
-A stray worktree at `.claude/worktrees/finish-dig-designation` (branch
-`worktree-finish-dig-designation`) had done the same save/load work independently but was left
-unmerged; it was confirmed identical to `game-rework` HEAD (no diff) and removed as redundant rather
-than merged.
+- `AntCity/Scripts/Buildings/BuildManager.cs` - added `MarkForDiggingForTest(Rect2I)` (test-only
+  hook, no behavior change).
+- `AntCity/Scenes/Main.tscn` - `DigButton` tooltip now explains that marked tunnels wait for a free
+  digger.
+- `AntCity/Scripts/DesignationProbe.cs` (new) - headless regression probe for dig-designations.
+- `AntCity/Scenes/DesignationCheck.tscn` (new) - runs `DesignationProbe` against `Main.tscn`, same
+  pattern as `ColonyCheck.tscn`/`StarveCheck.tscn`.
+- `AntCity/Scenes/Entities/AntWorker.cs` - touched during investigation, fully reverted; no net
+  diff.
+- `AI_HANDOFF.md` - this file; removed the stale "Current Test" handoff-confirmation section now
+  that a session has picked up from it.
 
 ## Important Decisions
 
-- Designations are a **separate obstruction set** from `claimedDigCells`/`obstructions`, not merged
-  into them — deliberate, to keep "what the player asked for" distinct from what the game inferred.
-- Draw order *is* dig priority (lower batch index dug first) — no separate priority UI.
-- The same drag gesture used for room placement is reused for marking tunnels, intentionally, to
-  avoid introducing a second interaction idiom for the same kind of question.
-- A designated cell gets headroom on its own target cell (unlike organic dig), because it's a
-  player-authored tunnel, not a load-bearing room footprint.
-- Git Safety policy changed: Claude now has standing permission to run any git command in this repo
-  (including destructive ones) but must ask first, every time, and get an explicit yes — see
-  `CLAUDE.md`.
+- Dig-designation's job-priority behavior (Forager/Builder own-trade outranks a marked tunnel)
+  is **intentional, left unchanged** - the user explicitly chose "leave the mechanism, fix
+  expectations instead" over making it role-agnostic like obstruction-clearing. If this comes up
+  again, don't re-litigate it without the user raising it.
+- `DesignationProbe`/`DesignationCheck.tscn` are kept as permanent gameplay-probe infrastructure
+  (user's call), not a throwaway diagnostic - same standing as `ColonyProbe`/`StarveProbe`. Its
+  `TimeoutSeconds` (120 sim-seconds) is deliberately generous because the claiming ant can be
+  anywhere in the colony's tunnels, not just adjacent to the mark.
+- Designations remain a separate obstruction set from `claimedDigCells`/`obstructions` (prior
+  decision, unchanged) - see the feature's original commit `095fca9` for the rest of that
+  reasoning.
 
 ## Known Problems / Unverified
 
-- **No manual/runtime playtest has ever been done on this feature**, across any session. Still
-  needs, in the real Godot editor: toggle Dig on, drag a rectangle over solid ground, confirm tint
-  appears, confirm diggers path to and cut marked cells in draw order before falling back to organic
-  targets, confirm right-click cancels marking, confirm opening Build tray disarms Dig and vice
-  versa, confirm designations survive an actual save/quit/load cycle in-game.
-- Whether `IsFullyManned` (referenced in `TryClaimDesignation`) correctly accounts for multi-ant
-  cooperative digging on a designated cell has not been traced end-to-end.
-- `dotnet build` passed as of `095fca9`; has not been re-verified since (no C# changes since, so
-  should still hold, but wasn't re-run).
+- Only the "mark → claimed → eventually dug" path and the tint/toggle UI were manually verified.
+  The remaining items from the original playtest checklist are still unverified in a live human
+  session: right-click cancels marking, opening Build tray disarms Dig and vice versa, designations
+  survive an actual save/quit/load cycle in-game, and multi-ant cooperative digging on a single
+  designated cell (`MaxDiggersPerCell`).
+- The connected Godot MCP plugin's `get_debug_output` did not surface any `GD.Print` output during
+  this session, from either `run_project` or `run_scene` sessions - worth a look if future
+  debugging wants to rely on it rather than the file-write workaround used (and then removed) here.
 
 ## Unfinished Work
 
-None identified for the dig-designation feature — it is a complete vertical slice, implementation
-and persistence both. No new goal has been picked yet; ask the user what's next.
+- The rest of the original playtest checklist (see "Known Problems" above).
+- No new goal has been picked yet - ask the user what's next.
 
 ## Exact Recommended Next Step
 
-1. Launch the project in the Godot editor and manually run through the playtest checklist under
-   "Known Problems" above — this feature has shipped to the branch with zero runtime verification.
-2. If anything fails, fix forward on `game-rework` (no need for a worktree — everything now lives in
-   the main checkout).
+1. With the user, manually run through the remaining playtest checklist items above (cancel,
+   Build/Dig mutual exclusion, save/load, cooperative multi-ant digging on one designated cell).
+2. If anything fails, fix forward on `game-rework`.
 3. Ask the user what the next goal is; nothing is currently queued.
