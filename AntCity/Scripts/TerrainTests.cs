@@ -59,6 +59,15 @@ public partial class TerrainTests : Node
         SaveRoundTripRebuildsTheWorld();
 
         GD.Print($"--- {passed} passed, {failed} failed ---");
+
+        // Both suites used to print a tally and let the run exit 0 whatever was in it, so a headless
+        // run could report six failures and still look like a clean pass to anything reading the
+        // exit status. Terrain is the last _Ready in the scene, so it is the one place that can
+        // answer for both of them.
+        SaveLoadTests saves = GetNodeOrNull<SaveLoadTests>("SaveLoadTests");
+        int total = failed + (saves?.Failed ?? 0);
+
+        GetTree().Quit(total == 0 ? 0 : 1);
     }
 
     private void StartingWorldIsWalkable()

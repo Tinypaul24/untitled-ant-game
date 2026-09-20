@@ -1,4 +1,5 @@
 using Godot;
+using System;
 using System.Collections.Generic;
 
 public partial class SaveLoadTests : Node
@@ -12,7 +13,10 @@ public partial class SaveLoadTests : Node
     private int passed;
     private int failed;
 
-    private readonly HashSet<string> preExistingSaves = new();
+    // Read by the terrain suite, which runs last and turns the pair of them into an exit status.
+    public int Failed => failed;
+
+    private TestSaveDirectory storage;
 
     public override void _Ready()
     {
@@ -22,27 +26,40 @@ public partial class SaveLoadTests : Node
         colony = main.GetNode<ColonyManager>("ColonyManager");
         camera = main.GetNode<Camera2D>("Camera2D");
 
-        foreach (SaveSlot slot in saveManager.ListSaves())
-        {
-            preExistingSaves.Add(slot.Path);
-        }
-
         // Same reason as the terrain suite: these want the colony a few seconds in, not mid-arrival.
         main.GetNode<ColonyFounding>("ColonyFounding").CompleteNow();
 
         GD.Print("--- save/load tests ---");
 
-        ColonyComesBackAsItWas();
-        NothingIsHeldOverFromTheOldWorld();
-        TheFoundingDoesNotStartAgainAfterALoad();
-        TheQueenComesBackAsSheWas();
-        OrdersAndSelectionComeBack();
-        PauseMenuFreezesAndResumes();
-        PauseMenuButtonsSaveAndLoad();
-        SaveListHoldsEveryColony();
-        SimulatedMatterComesBack();
+        // Storage is taken over before the first save operation of any kind - listing included,
+        // because listing is what migrates a legacy save into the folder being listed.
+        using (storage = new TestSaveDirectory(saveManager))
+        {
+            try
+            {
+                TheseTestsNeverTouchThePlayersSaves();
+                ColonyComesBackAsItWas();
+                NothingIsHeldOverFromTheOldWorld();
+                TheFoundingDoesNotStartAgainAfterALoad();
+                TheQueenComesBackAsSheWas();
+                OrdersAndSelectionComeBack();
+                PauseMenuFreezesAndResumes();
+                PauseMenuButtonsSaveAndLoad();
+                SaveListHoldsEveryColony();
+                SimulatedMatterComesBack();
 
-        DiscardSavesMadeByTheseTests();
+                DiscardSavesMadeByTheseTests();
+            }
+            catch (InvalidOperationException stopped)
+            {
+                // A save that did not write, a load that did not read, a delete of something this
+                // run does not own. The previous behaviour was to press on regardless, and the one
+                // time it mattered the suite carried a failed write all the way to the delete and
+                // destroyed a colony the player had saved. There is nothing useful past this point.
+                failed++;
+                GD.PrintErr($"  STOP  {stopped.Message}");
+            }
+        }
 
         GD.Print($"--- {passed} passed, {failed} failed ---");
     }
@@ -86,7 +103,9 @@ public partial class SaveLoadTests : Node
             expected.Add(materials.GetCell(origin + new Vector2I(i % 4, i / 4)));
         }
 
-        Check(saveManager.Save(), "a colony with simulated matter can be saved");
+        // Save throws unless the file really landed in this run's own folder, so getting a path
+        // back at all is the assertion.
+        Check(!string.IsNullOrEmpty(storage.Save()), "a colony with simulated matter can be saved");
 
         // Scrub it, so a passing test cannot be the original state simply never having been touched.
         for (int y = 0; y < MaterialWorld.CellsPerTileAxis; y++)
@@ -99,7 +118,7 @@ public partial class SaveLoadTests : Node
 
         Check(materials.GetCell(origin) == MaterialId.Air, "the matter really was cleared before loading");
 
-        saveManager.Load();
+        storage.Load();
 
         bool same = true;
 
@@ -130,20 +149,37 @@ public partial class SaveLoadTests : Node
         materials.DeriveDirtyTiles();
     }
 
+    // The check that has to hold before any other save test is allowed to run.
+    //
+    // This suite writes saves, lists them and deletes one. Pointed at the folder the player keeps
+    // their colonies in, that is not a test suite, it is a shredder - and it has already destroyed
+    // a real save once, on a run whose writes were failing and which carried on to the delete
+    // regardless. Storage is handed to the suite, never discovered: a directory of its own, never
+    // the player's, empty when it starts.
+    private void TheseTestsNeverTouchThePlayersSaves()
+    {
+        Check(saveManager.SavesDirectory != SaveManager.DefaultSavesDirectory,
+            "the suite saves into a folder of its own, not the player's",
+            $"(was writing to {saveManager.SavesDirectory})");
+
+        int alreadyThere = saveManager.ListSaves().Count;
+
+        Check(alreadyThere == 0, "and that folder starts out empty",
+            $"({alreadyThere} saves were already in it)");
+    }
+
+    // Cleanup by inventory, not by subtraction.
+    //
+    // This used to list the folder and delete whatever was not in it when the run started, which is
+    // only ever as safe as that opening snapshot. Now every file the suite writes is recorded as it
+    // is written, and those are the only ones that can be removed.
     private void DiscardSavesMadeByTheseTests()
     {
-        int removed = 0;
+        storage.DeleteCreatedFiles();
 
-        foreach (SaveSlot slot in saveManager.ListSaves())
-        {
-            if (!preExistingSaves.Contains(slot.Path) && saveManager.DeleteSave(slot.Path))
-            {
-                removed++;
-            }
-        }
+        int left = saveManager.ListSaves().Count;
 
-        Check(saveManager.ListSaves().Count == preExistingSaves.Count,
-            "the tests leave no saves of their own behind", $"(cleaned up {removed})");
+        Check(left == 0, "the tests leave no saves of their own behind", $"({left} left over)");
     }
 
 
@@ -172,8 +208,8 @@ public partial class SaveLoadTests : Node
 
         Check(pheromones.MarkedCells > 0, "there is a trail to lose", $"{pheromones.MarkedCells} cells");
 
-        saveManager.Save();
-        saveManager.Load();
+        storage.Save();
+        storage.Load();
 
         Check(pheromones.MarkedCells == 0, "trails from the old world are gone",
             $"{pheromones.MarkedCells} cells survived");
@@ -202,11 +238,11 @@ public partial class SaveLoadTests : Node
     {
         var founding = main.GetNode<ColonyFounding>("ColonyFounding");
 
-        saveManager.Save();
+        storage.Save();
 
         int antsBefore = AntPositions().Count;
 
-        saveManager.Load();
+        storage.Load();
 
         Check(founding.Finished, "the founding is over once a save is loaded");
         Check(AntPositions().Count == antsBefore, "and it has not spawned another set of workers",
@@ -221,12 +257,12 @@ public partial class SaveLoadTests : Node
         queen.Grounded = false;
         queen.LayAccumulator = 4.5;
 
-        saveManager.Save();
+        storage.Save();
 
         queen.Grounded = true;
         queen.LayAccumulator = 0;
 
-        saveManager.Load();
+        storage.Load();
 
         Check(!main.GetNode<Queen>("Queen").Grounded, "a queen saved in the air is still in the air");
         Check(Mathf.Abs(main.GetNode<Queen>("Queen").LayAccumulator - 4.5) < 0.001,
@@ -257,7 +293,7 @@ public partial class SaveLoadTests : Node
         Check(antPositions.Count > 0, "there are ants to save");
         Check(targetWasDiggable, "there is solid ground to dig after saving");
 
-        saveManager.Save();
+        storage.Save();
 
         colony.RemoveFood(colony.Food);
         colony.IncreaseCapacity(99);
@@ -276,7 +312,7 @@ public partial class SaveLoadTests : Node
         Check(colony.Food != food, "the colony really was changed before loading");
         Check(!grid.CanDig(digTarget), "the ground really was dug before loading");
 
-        saveManager.Load();
+        storage.Load();
 
         List<Vector2> restored = AntPositions();
 
@@ -328,8 +364,8 @@ public partial class SaveLoadTests : Node
         Check(before.HasDigJob, "an ordered ant records her dig job");
         Check(before.Selected, "a selected ant records that she is selected");
 
-        saveManager.Save();
-        saveManager.Load();
+        storage.Save();
+        storage.Load();
 
         AntWorker restoredAnt = FindAntNear(new Vector2(before.X, before.Y));
 
@@ -390,6 +426,10 @@ public partial class SaveLoadTests : Node
 
         save.EmitSignal(BaseButton.SignalName.Pressed);
 
+        // The button goes to the real manager rather than through the test's own Save, so the file
+        // it wrote has to be claimed by hand or nothing would ever clean it up.
+        storage.RecordSavedFile();
+
         Check(saveManager.LastMessage == "Colony saved.", "the save button writes a save", $"(said \"{saveManager.LastMessage}\")");
         Check(!load.Disabled, "the load button turns on once a save exists");
 
@@ -423,8 +463,8 @@ public partial class SaveLoadTests : Node
     {
         int before = saveManager.ListSaves().Count;
 
-        saveManager.Save();
-        saveManager.Save();
+        storage.Save();
+        storage.Save();
 
         List<SaveSlot> slots = saveManager.ListSaves();
 
@@ -444,7 +484,9 @@ public partial class SaveLoadTests : Node
         Check(slots[0].IsReadable, "a freshly written slot is readable");
 
         int countBeforeDelete = slots.Count;
-        saveManager.DeleteSave(slots[0].Path);
+        // Through the owned storage, which refuses any path this run did not write. That refusal is
+        // the whole point: this line, against the real folder, is what deleted a player's colony.
+        storage.Delete(slots[0].Path);
 
         Check(saveManager.ListSaves().Count == countBeforeDelete - 1, "deleting a save takes it off the list");
     }

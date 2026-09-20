@@ -6,8 +6,14 @@ using FileAccess = Godot.FileAccess;
 
 public partial class SaveManager : Node
 {
-    private const string SavesDirectory = "user://saves";
+    // Public so a test can assert it is not the one being written to.
+    public const string DefaultSavesDirectory = "user://saves";
     private const string LegacySavePath = "user://savegame.json";
+
+    // Each manager owns its storage location. Test worlds inject a fresh temporary directory
+    // before any save operation, including listing (which can migrate an old save).
+    public string SavesDirectory { get; set; } = DefaultSavesDirectory;
+    public string LastSavedPath { get; private set; } = string.Empty;
 
     private static readonly PackedScene AntWorkerScene = GD.Load<PackedScene>("res://AntCity/Scenes/Entities/AntWorker.tscn");
     private static readonly PackedScene EggScene = GD.Load<PackedScene>("res://AntCity/Scenes/Entities/Egg.tscn");
@@ -118,6 +124,7 @@ public partial class SaveManager : Node
 
     public bool Save()
     {
+        LastSavedPath = string.Empty;
         SaveData data = Capture();
         data.SavedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
@@ -137,6 +144,14 @@ public partial class SaveManager : Node
         }
 
         file.StoreString(JsonSerializer.Serialize(data, JsonOptions));
+        file.Flush();
+
+        if (file.GetError() != Error.Ok)
+        {
+            return Report(false, "Save failed.");
+        }
+
+        LastSavedPath = path;
 
         GD.Print($"Saved the colony to {path}");
         return Report(true, "Colony saved.");
@@ -250,7 +265,7 @@ public partial class SaveManager : Node
         }
     }
 
-    private static string NextSavePath()
+    private string NextSavePath()
     {
         string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
         string path = $"{SavesDirectory}/colony_{stamp}.json";
@@ -263,9 +278,9 @@ public partial class SaveManager : Node
         return path;
     }
 
-    private static void MigrateLegacySave()
+    private void MigrateLegacySave()
     {
-        if (!FileAccess.FileExists(LegacySavePath))
+        if (SavesDirectory != DefaultSavesDirectory || !FileAccess.FileExists(LegacySavePath))
         {
             return;
         }
