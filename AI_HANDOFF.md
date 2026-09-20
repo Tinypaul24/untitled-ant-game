@@ -83,23 +83,19 @@ picked yet** - ask the user what's next.
 
 ## Known Problems / Unverified
 
-- Only the "mark → claimed → eventually dug" path and the tint/toggle UI were manually verified.
-  The remaining items from the original playtest checklist are still unverified in a live human
-  session: right-click cancels marking, opening Build tray disarms Dig and vice versa, designations
-  survive an actual save/quit/load cycle in-game, and multi-ant cooperative digging on a single
-  designated cell (`MaxDiggersPerCell`).
 - The connected Godot MCP plugin's `get_debug_output` did not surface any `GD.Print` output during
   this session, from either `run_project` or `run_scene` sessions - worth a look if future
   debugging wants to rely on it rather than the file-write workaround used (and then removed) here.
+- Nothing else outstanding for dig-designation - see "Completed Work" above; the full original
+  playtest checklist is now done, live with the user: right-click cancels marking, Build tray and
+  Dig disarm each other in both directions, designations survive an actual save/quit/load cycle,
+  and more than one ant can cooperatively dig a single designated cell.
 
 ## Unfinished Work
 
-- The rest of the original playtest checklist (see "Known Problems" above).
-- No new goal has been picked yet - ask the user what's next.
+None identified for dig-designation - it has now had a full manual playtest in addition to the
+automated probe. No new goal has been picked yet - ask the user what's next.
 
 ## Exact Recommended Next Step
 
-1. With the user, manually run through the remaining playtest checklist items above (cancel,
-   Build/Dig mutual exclusion, save/load, cooperative multi-ant digging on one designated cell).
-2. If anything fails, fix forward on `game-rework`.
-3. Ask the user what the next goal is; nothing is currently queued.
+Ask the user what the next goal is; nothing is currently queued.
