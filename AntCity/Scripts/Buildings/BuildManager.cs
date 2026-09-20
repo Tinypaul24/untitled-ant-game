@@ -158,57 +158,86 @@ public partial class BuildManager : Node2D
         QueueRedraw();
     }
 
-    // Marked ground, oldest batch first and nearest within a batch.
+    // Marked ground, oldest batch first and nearest within a batch - skipping whatever this worker
+    // cannot currently walk to.
+    //
+    // The reachability pass is not a nicety. Designations are handed out strictly oldest-batch
+    // first, so a single marked cell nobody can get to - a tunnel drawn across a rock seam the
+    // colony never opened, ground that closed up behind it - was re-picked by every idle digger
+    // forever: claim it, fail to plan a route, drop the claim, take it straight back. Everything
+    // the player marked afterwards, and every room, queued behind that one cell. Rooms have
+    // stepped past cells nobody can reach since they learned to wait their turn; designations and
+    // cave-ins never did, and both of them are asked before rooms are.
+    //
+    // Same shape as the room loop: take the best candidate, and if the route will not plan, set it
+    // aside and ask again without it.
     private bool TryClaimDesignation(Vector2 fromPosition, out Vector2I cell)
     {
         cell = default;
 
-        bool found = false;
-        int bestBatch = int.MaxValue;
-        float bestDistance = float.MaxValue;
-        List<Vector2I> stale = null;
+        Vector2I fromCell = GridManager.WorldToCell(fromPosition);
+        HashSet<Vector2I> excluded = null;
 
-        foreach (KeyValuePair<Vector2I, int> entry in designations)
+        while (true)
         {
-            // Somebody else got there, or it turned to rock while it was queued.
-            if (!GridManager.CanDig(entry.Key))
+            cell = default;
+            bool found = false;
+            int bestBatch = int.MaxValue;
+            float bestDistance = float.MaxValue;
+            List<Vector2I> stale = null;
+
+            foreach (KeyValuePair<Vector2I, int> entry in designations)
             {
-                (stale ??= new List<Vector2I>()).Add(entry.Key);
+                // Somebody else got there, or it turned to rock while it was queued.
+                if (!GridManager.CanDig(entry.Key))
+                {
+                    (stale ??= new List<Vector2I>()).Add(entry.Key);
+                    continue;
+                }
+
+                if (IsFullyManned(entry.Key) || excluded != null && excluded.Contains(entry.Key))
+                {
+                    continue;
+                }
+
+                float distance = GridManager.CellToWorld(entry.Key).DistanceSquaredTo(fromPosition);
+
+                if (entry.Value > bestBatch || (entry.Value == bestBatch && distance >= bestDistance))
+                {
+                    continue;
+                }
+
+                bestBatch = entry.Value;
+                bestDistance = distance;
+                cell = entry.Key;
+                found = true;
+            }
+
+            // Dropped here rather than after the whole search, so the passes that follow are
+            // already looking at a tidied board instead of re-collecting the same dead cells.
+            if (stale != null)
+            {
+                foreach (Vector2I gone in stale)
+                {
+                    designations.Remove(gone);
+                }
+            }
+
+            if (!found)
+            {
+                return false;
+            }
+
+            if (IsRecentlyUnreachable(fromCell, cell) || !TryPlanRoute(fromCell, cell))
+            {
+                (excluded ??= new HashSet<Vector2I>()).Add(cell);
                 continue;
             }
 
-            if (IsFullyManned(entry.Key))
-            {
-                continue;
-            }
-
-            float distance = GridManager.CellToWorld(entry.Key).DistanceSquaredTo(fromPosition);
-
-            if (entry.Value > bestBatch || (entry.Value == bestBatch && distance >= bestDistance))
-            {
-                continue;
-            }
-
-            bestBatch = entry.Value;
-            bestDistance = distance;
-            cell = entry.Key;
-            found = true;
-        }
-
-        if (stale != null)
-        {
-            foreach (Vector2I gone in stale)
-            {
-                designations.Remove(gone);
-            }
-        }
-
-        if (found)
-        {
             Claim(cell);
-        }
 
-        return found;
+            return true;
+        }
     }
 
 
@@ -253,6 +282,9 @@ public partial class BuildManager : Node2D
         claimedDigCells.Clear();
         obstructions.Clear();
         designations.Clear();
+        // Failed routes belong to the terrain that was there a moment ago. Carried into a loaded
+        // world they suppress perfectly good jobs at coordinates that now mean something else.
+        unreachableUntilUsec.Clear();
         isMarking = false;
     }
 
@@ -452,7 +484,7 @@ public partial class BuildManager : Node2D
                     break;
                 }
 
-                if (IsRecentlyUnreachable(candidateCell) || !TryPlanRoute(fromCell, candidateCell))
+                if (IsRecentlyUnreachable(fromCell, candidateCell) || !TryPlanRoute(fromCell, candidateCell))
                 {
                     excluded.Add(candidateCell);
                     continue;
@@ -486,11 +518,23 @@ public partial class BuildManager : Node2D
     // up again quickly rather than sitting idle on a stale answer.
     private const ulong UnreachableCooldownUsec = 3_000_000;
 
-    private readonly Dictionary<Vector2I, ulong> unreachableUntilUsec = new();
+    // Remembered per asking worker, not per cell.
+    //
+    // "Nobody can reach it" is not a property a cell has on its own - it is a property of the cell
+    // and the ground the asker is standing on. Filing the failure against the cell alone means one
+    // worker sealed in a side pocket, failing on a job the rest of the colony is standing next to,
+    // takes that job off everybody's board for the next three seconds. That is the same starvation
+    // this cache exists to prevent, just pointed the other way.
+    private readonly Dictionary<(Vector2I From, Vector2I Goal), ulong> unreachableUntilUsec = new();
 
-    private bool IsRecentlyUnreachable(Vector2I cell)
+    // Entries expire on their own but are only dropped when the table is big enough to be worth
+    // walking, which keeps a long game from accumulating one per place a worker ever stood.
+    private const int UnreachableSweepThreshold = 512;
+
+    private bool IsRecentlyUnreachable(Vector2I fromCell, Vector2I cell)
     {
-        return unreachableUntilUsec.TryGetValue(cell, out ulong until) && Time.GetTicksUsec() < until;
+        return unreachableUntilUsec.TryGetValue((fromCell, cell), out ulong until)
+            && Time.GetTicksUsec() < until;
     }
 
     private bool TryPlanRoute(Vector2I fromCell, Vector2I goal)
@@ -500,9 +544,39 @@ public partial class BuildManager : Node2D
             return true;
         }
 
-        unreachableUntilUsec[goal] = Time.GetTicksUsec() + UnreachableCooldownUsec;
+        ulong now = Time.GetTicksUsec();
+
+        if (unreachableUntilUsec.Count >= UnreachableSweepThreshold)
+        {
+            SweepExpiredUnreachable(now);
+        }
+
+        unreachableUntilUsec[(fromCell, goal)] = now + UnreachableCooldownUsec;
 
         return false;
+    }
+
+    private void SweepExpiredUnreachable(ulong now)
+    {
+        List<(Vector2I From, Vector2I Goal)> expired = null;
+
+        foreach (KeyValuePair<(Vector2I From, Vector2I Goal), ulong> entry in unreachableUntilUsec)
+        {
+            if (now >= entry.Value)
+            {
+                (expired ??= new List<(Vector2I From, Vector2I Goal)>()).Add(entry.Key);
+            }
+        }
+
+        if (expired == null)
+        {
+            return;
+        }
+
+        foreach ((Vector2I From, Vector2I Goal) key in expired)
+        {
+            unreachableUntilUsec.Remove(key);
+        }
     }
 
     // Cells no room is ever going to get, found and let go.
@@ -593,6 +667,15 @@ public partial class BuildManager : Node2D
             }
         }
     }
+
+    // The nearest cave-in this worker can actually get to.
+    //
+    // A blocked passage is the highest-ranked work on the board, so an unreachable one is the
+    // worst thing that can sit on it: it outranks every designation and every room, and the cell
+    // that caused it is by definition on the far side of something. The wall that cut the colony
+    // in two registers an obstruction on both sides of itself, and without this the half that
+    // cannot reach the far one would down tools and queue behind it rather than dig out the half
+    // it is standing in.
     private bool TryClaimNearestObstruction(Vector2 fromPosition, out Vector2I cell)
     {
         cell = default;
@@ -602,48 +685,63 @@ public partial class BuildManager : Node2D
             return false;
         }
 
-        bool found = false;
-        float bestDistance = float.MaxValue;
-        List<Vector2I> stale = null;
+        Vector2I fromCell = GridManager.WorldToCell(fromPosition);
+        HashSet<Vector2I> excluded = null;
 
-        foreach (Vector2I candidate in obstructions)
+        while (true)
         {
-            // Something else may have cleared it, or it may have turned into terrain nobody can dig.
-            if (!GridManager.CanDig(candidate))
+            cell = default;
+            bool found = false;
+            float bestDistance = float.MaxValue;
+            List<Vector2I> stale = null;
+
+            foreach (Vector2I candidate in obstructions)
             {
-                (stale ??= new List<Vector2I>()).Add(candidate);
+                // Something else may have cleared it, or it may have turned into terrain nobody can dig.
+                if (!GridManager.CanDig(candidate))
+                {
+                    (stale ??= new List<Vector2I>()).Add(candidate);
+                    continue;
+                }
+
+                if (IsFullyManned(candidate) || excluded != null && excluded.Contains(candidate))
+                {
+                    continue;
+                }
+
+                float distance = GridManager.CellToWorld(candidate).DistanceSquaredTo(fromPosition);
+
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    cell = candidate;
+                    found = true;
+                }
+            }
+
+            if (stale != null)
+            {
+                foreach (Vector2I gone in stale)
+                {
+                    obstructions.Remove(gone);
+                }
+            }
+
+            if (!found)
+            {
+                return false;
+            }
+
+            if (IsRecentlyUnreachable(fromCell, cell) || !TryPlanRoute(fromCell, cell))
+            {
+                (excluded ??= new HashSet<Vector2I>()).Add(cell);
                 continue;
             }
 
-            if (IsFullyManned(candidate))
-            {
-                continue;
-            }
-
-            float distance = GridManager.CellToWorld(candidate).DistanceSquaredTo(fromPosition);
-
-            if (distance < bestDistance)
-            {
-                bestDistance = distance;
-                cell = candidate;
-                found = true;
-            }
-        }
-
-        if (stale != null)
-        {
-            foreach (Vector2I gone in stale)
-            {
-                obstructions.Remove(gone);
-            }
-        }
-
-        if (found)
-        {
             Claim(cell);
-        }
 
-        return found;
+            return true;
+        }
     }
 
 
