@@ -33,6 +33,9 @@ public partial class SaveLoadTests : Node
         GD.Print("--- save/load tests ---");
 
         ColonyComesBackAsItWas();
+        NothingIsHeldOverFromTheOldWorld();
+        TheFoundingDoesNotStartAgainAfterALoad();
+        TheQueenComesBackAsSheWas();
         OrdersAndSelectionComeBack();
         PauseMenuFreezesAndResumes();
         PauseMenuButtonsSaveAndLoad();
@@ -143,11 +146,105 @@ public partial class SaveLoadTests : Node
             "the tests leave no saves of their own behind", $"(cleaned up {removed})");
     }
 
+
+    // Nothing that belonged to the old world survives into the new one.
+    //
+    // Every one of these is transient or derived state that is neither saved nor was cleared, so it
+    // leaked across a load and stayed there for the rest of the session. The forage claim is the
+    // worst of them: a claimed cell is skipped by every future forager, so a deposit claimed at the
+    // moment of loading became permanently invisible to the whole colony.
+    private void NothingIsHeldOverFromTheOldWorld()
+    {
+        var build = main.GetNode<BuildManager>("BuildManager");
+        var pheromones = main.GetNode<PheromoneField>("PheromoneField");
+
+        // A claim, a trail and a placement in flight - the three shapes of leak.
+        Vector2I foodCell = default;
+        bool haveFood = grid.TryFindForageTarget(grid.CellToWorld(grid.NestCenterCell), 40f * grid.CellSize, out foodCell);
+
+        if (haveFood)
+        {
+            grid.ClaimForageCell(foodCell);
+        }
+
+        pheromones.Deposit(grid.NestCenterCell);
+        build.BeginPlacement(BuildingType.Granary);
+
+        Check(pheromones.MarkedCells > 0, "there is a trail to lose", $"{pheromones.MarkedCells} cells");
+
+        saveManager.Save();
+        saveManager.Load();
+
+        Check(pheromones.MarkedCells == 0, "trails from the old world are gone",
+            $"{pheromones.MarkedCells} cells survived");
+        Check(!build.IsPlacing, "a placement in flight does not survive a load");
+        Check(build.Selected == null, "and neither does a selected room");
+        Check(build.ClaimedDigCellCount == 0, "no dig cell is still claimed",
+            $"{build.ClaimedDigCellCount} claimed");
+        Check(AntWorker.StallRescues == 0 && AntWorker.SpoilLeftovers == 0,
+            "the diagnostic counters start from zero",
+            $"{AntWorker.StallRescues} stalls, {AntWorker.SpoilLeftovers} leftovers");
+
+        if (haveFood)
+        {
+            Check(grid.TryFindForageTarget(grid.CellToWorld(foodCell), 3f * grid.CellSize, out _),
+                "a food cell claimed when the save loaded is offered again");
+        }
+    }
+
+    // The founding sequence does not restart on top of a loaded colony.
+    //
+    // Main creates ColonyFounding at runtime and nothing told it about loading, so a load during the
+    // six-second intro left it running: it carried on cutting its shaft into the restored world,
+    // teleported the Queen, spawned another set of starting workers on top of the restored
+    // population, and announced the colony founded on a save that might be an hour old.
+    private void TheFoundingDoesNotStartAgainAfterALoad()
+    {
+        var founding = main.GetNode<ColonyFounding>("ColonyFounding");
+
+        saveManager.Save();
+
+        int antsBefore = AntPositions().Count;
+
+        saveManager.Load();
+
+        Check(founding.Finished, "the founding is over once a save is loaded");
+        Check(AntPositions().Count == antsBefore, "and it has not spawned another set of workers",
+            $"{antsBefore} became {AntPositions().Count}");
+    }
+
+    // A queen saved mid-flight comes back mid-flight.
+    private void TheQueenComesBackAsSheWas()
+    {
+        var queen = main.GetNode<Queen>("Queen");
+
+        queen.Grounded = false;
+        queen.LayAccumulator = 4.5;
+
+        saveManager.Save();
+
+        queen.Grounded = true;
+        queen.LayAccumulator = 0;
+
+        saveManager.Load();
+
+        Check(!main.GetNode<Queen>("Queen").Grounded, "a queen saved in the air is still in the air");
+        Check(Mathf.Abs(main.GetNode<Queen>("Queen").LayAccumulator - 4.5) < 0.001,
+            "and her clutch timer is where she left it",
+            $"{main.GetNode<Queen>("Queen").LayAccumulator}");
+
+        main.GetNode<Queen>("Queen").Grounded = true;
+
+    }
     private void ColonyComesBackAsItWas()
     {
         colony.AddFood(17);
         camera.Position = new Vector2(1234f, 567f);
-        camera.Zoom = new Vector2(1.75f, 1.75f);
+
+        // A legal zoom. This was 1.75, which round-tripped exactly and was asserted to - but the
+        // whole-number rule exists because a 12px ant drawn at a fraction of a pixel turns to mush,
+        // and loading a save was the one route that bypassed it.
+        camera.Zoom = new Vector2(3f, 3f);
 
         List<Vector2> antPositions = AntPositions();
         int food = colony.Food;
@@ -199,6 +296,16 @@ public partial class SaveLoadTests : Node
         Check(grid.CanDig(digTarget), "ground dug after saving is solid again");
         Check(camera.Position.DistanceTo(cameraPosition) < 0.01f, "the view comes back to the same spot");
         Check(Mathf.Abs(camera.Zoom.X - cameraZoom) < 0.001f, "the view comes back at the same zoom");
+
+        // And a save carrying an illegal one is snapped to the nearest legal zoom rather than
+        // restored as written.
+        var controller = camera as CameraController;
+        controller?.SetZoomLevel(1.75f);
+
+        Check(controller == null || Mathf.IsEqualApprox(camera.Zoom.X, 2f),
+            "a fractional zoom is snapped to a whole one", $"{camera.Zoom.X}");
+
+        controller?.SetZoomLevel(cameraZoom);
     }
 
     private void OrdersAndSelectionComeBack()

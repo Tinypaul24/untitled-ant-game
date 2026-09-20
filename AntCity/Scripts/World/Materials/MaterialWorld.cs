@@ -140,6 +140,18 @@ public partial class MaterialWorld : Node2D
 
     public override void _Ready()
     {
+        // Three systems declare the tile size independently and none of them agree by construction:
+        // GridManager.CellSize is an [Export], the TileSet in Main.tscn leans on Godot's default
+        // 16x16 region, and CellSize * CellsPerTileAxis is this one. CellToTile shifts a material
+        // cell straight into a tile index, so if they ever drift the simulation silently addresses
+        // the wrong tiles - terrain derivation, digging and hazards all land one place over.
+        if (Grid != null && Grid.CellSize != CellSize * CellsPerTileAxis)
+        {
+            GD.PushError(
+                $"Tile size mismatch: GridManager.CellSize is {Grid.CellSize} but the material grid " +
+                $"covers {CellSize * CellsPerTileAxis}px per tile. These must be equal.");
+        }
+
         simulation = new MaterialSimulation(this);
         blastRandom.Randomize();
 
@@ -171,7 +183,7 @@ public partial class MaterialWorld : Node2D
         // work nobody sees, and pathfinding only reads the grid between frames anyway.
         DeriveDirtyTiles();
 
-        HardenNestWalls(delta);
+        CementWalls(delta);
     }
 
     // Ants cementing their tunnel walls with saliva, the way real ones do.
@@ -183,14 +195,78 @@ public partial class MaterialWorld : Node2D
     // gets, and the walls harden at a pace you notice over minutes rather than seconds.
     // Driven from _Process in play; the tests call it directly so they can run the clock forward
     // without waiting on real frames.
-    public void HardenNestWallsForTest(double delta) => HardenNestWalls(delta);
+    public void CementWallsForTest(double delta) => CementWalls(delta);
 
-    private void HardenNestWalls(double delta)
+    // Where the colony is currently plastering.
+    //
+    // This used to be a fixed square around the nest, which is fine for a burrow and useless for a
+    // chamber somebody dug forty tiles out. Sites are registered instead: the nest permanently, and
+    // every room's perimeter once it has been excavated.
+    private readonly List<Rect2I> cementSites = new();
+    private int nextSite;
+
+
+    // Plastering sites belong to rooms that are about to be freed, and the nest square belongs to a
+    // world that is about to be replaced. The sweep spends a fixed budget round-robin across every
+    // registered site, so a stale one does not just sit there - it permanently steals plastering
+    // from the walls that still exist.
+    public void ResetTransientState()
+    {
+        cementSites.Clear();
+        cementHoles.Clear();
+        nestSite = null;
+        nextSite = 0;
+    }
+    public void AddCementSite(Rect2I site)
+    {
+        if (!cementSites.Contains(site))
+        {
+            cementSites.Add(site);
+        }
+    }
+
+    public void RemoveCementSite(Rect2I site)
+    {
+        cementSites.Remove(site);
+    }
+
+    // Tiles this site will not plaster. A room's interior is the room; only its ring is the wall,
+    // and without this most of a small site's attempts would land inside the cavity and be wasted.
+    private readonly List<Rect2I> cementHoles = new();
+
+    public void AddCementSite(Rect2I site, Rect2I hole)
+    {
+        AddCementSite(site);
+
+        if (!cementHoles.Contains(hole))
+        {
+            cementHoles.Add(hole);
+        }
+    }
+
+    public void RemoveCementSite(Rect2I site, Rect2I hole)
+    {
+        RemoveCementSite(site);
+        cementHoles.Remove(hole);
+    }
+
+    // Ants cementing their tunnel walls with saliva, the way real ones do.
+    //
+    // A sweep rather than a reaction, for a specific reason: a reaction fires from a cell the tick
+    // visits, and a wall that is merely sitting there is asleep. This walks a handful of candidate
+    // cells per pass instead, so the cost is a fixed trickle no matter how big the colony gets.
+    //
+    // Sites are taken in turn against that same fixed budget rather than each getting its own, so
+    // twenty chambers cost exactly what one does. A colony that plastered proportionally to its own
+    // size would get slower the more it built, which is the wrong way round.
+    private void CementWalls(double delta)
     {
         if (Grid == null)
         {
             return;
         }
+
+        EnsureNestSite();
 
         hardenTimer += delta;
 
@@ -201,13 +277,19 @@ public partial class MaterialWorld : Node2D
 
         hardenTimer = 0;
 
-        Vector2I nest = Grid.NestCenterCell;
-
         for (int attempt = 0; attempt < HardenAttemptsPerPass; attempt++)
         {
-            Vector2I tile = nest + new Vector2I(
-                blastRandom.RandiRange(-HardenRadiusTiles, HardenRadiusTiles),
-                blastRandom.RandiRange(-HardenRadiusTiles, HardenRadiusTiles));
+            Rect2I site = cementSites[nextSite % cementSites.Count];
+            nextSite++;
+
+            Vector2I tile = new Vector2I(
+                site.Position.X + blastRandom.RandiRange(0, site.Size.X - 1),
+                site.Position.Y + blastRandom.RandiRange(0, site.Size.Y - 1));
+
+            if (IsInsideACementHole(tile))
+            {
+                continue;
+            }
 
             // Only ground the simulation owns, and only where a chunk already exists - hardening
             // must never be the thing that materialises new terrain.
@@ -238,16 +320,76 @@ public partial class MaterialWorld : Node2D
         }
     }
 
+    private bool IsInsideACementHole(Vector2I tile)
+    {
+        foreach (Rect2I hole in cementHoles)
+        {
+            if (hole.HasPoint(tile))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // The burrow itself, added once and never removed. Byte-for-byte the old behaviour: the same
+    // square, the same radius. The nest is where the colony lives whether or not a room has been
+    // placed in it, and it has to keep cementing before there are any rooms at all.
+    private void EnsureNestSite()
+    {
+        if (nestSite.HasValue)
+        {
+            return;
+        }
+
+        Vector2I nest = Grid.NestCenterCell;
+        int span = HardenRadiusTiles * 2 + 1;
+
+        nestSite = new Rect2I(nest - new Vector2I(HardenRadiusTiles, HardenRadiusTiles), new Vector2I(span, span));
+
+        AddCementSite(nestSite.Value);
+
+        // The hill as well, which is the same behaviour pointed at the surface.
+        //
+        // TouchesAir plus the earth-only filter confine plastering to the skin, so what forms is a
+        // hard crust over a loose interior - which is what a real ant hill is, and it means digging
+        // into one later has to break through something. It also does structural work: hardened
+        // earth is Solid and not displaceable, so a cemented rim physically holds the cone back off
+        // the doorstep instead of letting it slump wherever gravity wants.
+        int skyRows = Grid.SurfaceHeight - Grid.GrassDepth;
+        int moundSpan = Grid.MoundSpanTiles * 2 + 1;
+
+        AddCementSite(new Rect2I(
+            new Vector2I(nest.X - Grid.MoundSpanTiles, 0),
+            new Vector2I(moundSpan, Mathf.Max(1, skyRows))));
+    }
+
+    private Rect2I? nestSite;
+
+    // Four orthogonal neighbours, and a cell with no chunk behind it counts as earth rather than as
+    // air.
+    //
+    // That last part matters: GetCell falls through to the tile grid for a cell whose chunk does not
+    // exist, and the tile grid generates on demand - so a candidate sitting on a chunk boundary
+    // could make the plastering sweep the thing that materialises new terrain, which the guard
+    // above exists to prevent.
     private bool TouchesAir(Vector2I cell)
     {
-        return MaterialDatabase.Get(GetCell(cell + Vector2I.Up)).IsAir
-            || MaterialDatabase.Get(GetCell(cell + Vector2I.Down)).IsAir
-            || MaterialDatabase.Get(GetCell(cell + Vector2I.Left)).IsAir
-            || MaterialDatabase.Get(GetCell(cell + Vector2I.Right)).IsAir;
+        return IsAirAndMaterialised(cell + Vector2I.Up)
+            || IsAirAndMaterialised(cell + Vector2I.Down)
+            || IsAirAndMaterialised(cell + Vector2I.Left)
+            || IsAirAndMaterialised(cell + Vector2I.Right);
+    }
+
+    private bool IsAirAndMaterialised(Vector2I cell)
+    {
+        return TryGetChunkCached(CellToChunk(cell), out _) && MaterialDatabase.Get(GetCell(cell)).IsAir;
     }
 
     // How far from the nest the colony bothers to plaster, how often it works, and how many cells it
-    // tries per pass. Tuned for a trickle: the core of a burrow cements over a few minutes.
+    // tries per pass. Tuned for a trickle: the core of a burrow cements over a few minutes, and a
+    // room's ring - sixteen tiles against the nest's eight hundred - in seconds.
     private const int HardenRadiusTiles = 14;
     private const double HardenIntervalSeconds = 0.25;
     private const int HardenAttemptsPerPass = 24;
@@ -558,7 +700,7 @@ public partial class MaterialWorld : Node2D
 
     // ---- terrain generation -----------------------------------------------------------------
 
-    // Every cell of a tile gets the tile's material, so a 4x4 block of cells is one flat substance.
+    // Every cell of a tile gets the tile's material, so an 8x8 block of cells is one flat substance.
     // This is why painting terrain per cell still looked blocky: the cells were never given anything
     // to say that the tile had not already said.
     private void FillChunkFromTiles(MaterialChunk chunk)
@@ -647,7 +789,7 @@ public partial class MaterialWorld : Node2D
         return MaterialDatabase.Get(GetMaterialAt(worldPosition)).Kind == MaterialKind.Liquid;
     }
 
-    // Clears the 4x4 block of cells behind one gameplay tile. This is what digging calls.
+    // Clears the 8x8 block of cells behind one gameplay tile. This is what digging calls.
     public void ClearTile(Vector2I tile)
     {
         Vector2I origin = TileToCellOrigin(tile);
@@ -815,8 +957,6 @@ public partial class MaterialWorld : Node2D
     // matter behind it - and because every write wakes its neighbours, sand above a fresh tunnel
     // collapses into it and liquids run in without anything having to ask them to.
 
-    // An even scatter, so a tile chipped a quarter at a time erodes all over rather than from one
-    // corner. Ordered-dither indices into the 4x4 block.
     // The order cells of a tile are chipped away in, so a half-dug tile has its material spread
     // evenly rather than cleared from one corner.
     //
@@ -859,6 +999,20 @@ public partial class MaterialWorld : Node2D
     }
 
 
+    // How much earth a bored tunnel keeps overhead, in cells. Two rows is four world pixels.
+    //
+    // A dug tile used to be emptied completely, so every corridor was a clean sixteen-pixel box.
+    // The ant walking it is twelve pixels tall, which left her rattling around in a crate. An ant
+    // tunnel in the ground is dug to the size of the ant - that is the whole reason it is a tunnel
+    // and not a cave - so a bored tile now keeps its lip and the channel comes out twelve pixels,
+    // the height of the animal that cut it.
+    //
+    // Two rows is also comfortably inside the derivation threshold: a bored tile keeps 16 of its
+    // 64 cells against a SolidCellsForSolidTile of 32, so it always reads back as open ground.
+    // The deepest a lip ever gets, in cells - six world pixels. Bounds the channel, so this is what
+    // has to be cleared to take a ceiling off completely, and what a test has to measure below.
+    public const int MaxCeilingCellRows = 3;
+
     // Digging simply removes the earth. Nothing is shaken loose around the hole.
     //
     // It used to jar the surrounding soil into loose grains that slumped into the new tunnel. With
@@ -867,22 +1021,184 @@ public partial class MaterialWorld : Node2D
     // as the digging being broken rather than as physics.
     private void OnTileDug(Vector2I tile)
     {
-        ClearTile(tile);
+        BoreTile(tile);
+
+        // A lip is only ever the underside of the earth above it. Dig that earth out too and the
+        // lip has nothing left to hang from - it becomes a slab floating in the middle of the
+        // cavity, which is precisely the "small squares in the tunnel" this game has had before.
+        // So opening a tile also takes the ceiling off anything already open beneath it.
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            OpenCeiling(tile + new Vector2I(dx, 1));
+        }
+    }
+
+    // Cuts the channel an ant walks down: the full width of the tile, floor to ceiling.
+    private void BoreTile(Vector2I tile)
+    {
+        Vector2I origin = TileToCellOrigin(tile);
+
+        for (int x = 0; x < CellsPerTileAxis; x++)
+        {
+            int top = CeilingDepthAt(tile, x);
+
+            LayCeiling(origin, x, top);
+
+            for (int y = top; y < CellsPerTileAxis; y++)
+            {
+                SetCell(origin + new Vector2I(x, y), MaterialId.Air);
+            }
+        }
+    }
+
+    // How much earth this one column of the tile keeps overhead.
+    //
+    // Ragged on purpose. A lip of constant depth just lowers the lid: the corridor is still a
+    // flat-topped box, only a shorter one, and it still repeats exactly every sixteen pixels. The
+    // depth is hashed on the world column rather than the column within the tile, so the roughness
+    // runs continuously along a corridor instead of restarting at every tile boundary - which is
+    // the difference between a tunnel and a row of identical crates.
+    private int CeilingDepthAt(Vector2I tile, int column)
+    {
+        if (!KeepsCeiling(tile))
+        {
+            return 0;
+        }
+
+        return 1 + (int)(ColumnNoise(tile.X * CellsPerTileAxis + column) % 3);
+    }
+
+    private static uint ColumnNoise(int worldColumn)
+    {
+        uint hash = (uint)worldColumn * 2654435761u;
+
+        hash ^= hash >> 15;
+        hash *= 2246822519u;
+        hash ^= hash >> 13;
+
+        return hash;
+    }
+
+    // The lip has to be written, not merely left alone.
+    //
+    // A chunk is materialised on first write and fills itself from the tile grid - and GridManager
+    // flips the tile to Tunnel *before* it announces the dig, so on untouched ground "clear
+    // everything except the top two rows" clears everything and then finds two rows of air. The
+    // ceiling only survived on tiles whose chunk already existed, which is nearly none of them.
+    //
+    // Cells that already hold something are left as they are: a tile chipped grain by grain had its
+    // chunk materialised while it was still solid, and whatever is up there - cemented wall, stone -
+    // is the real ceiling and better than anything this could invent.
+    private void LayCeiling(Vector2I origin, int column, int rows)
+    {
+        // Made of whatever it hangs from, so a roof under rock is rock and a roof under a wall the
+        // ants have cemented keeps the cement. Turf is the one substitution: the underside of grass
+        // is soil, and a green ceiling underground would be nonsense.
+        MaterialId above = GetCell(origin + new Vector2I(column, -1));
+        MaterialId roof = above == MaterialId.Stone || above == MaterialId.HardenedDirt
+            ? above
+            : MaterialId.Dirt;
+
+        for (int y = 0; y < rows; y++)
+        {
+            Vector2I cell = origin + new Vector2I(column, y);
+
+            if (MaterialDatabase.Get(GetCell(cell)).IsAir)
+            {
+                SetCell(cell, roof);
+            }
+        }
+    }
+
+    // Takes the lip off a tile that is already open.
+    //
+    // Only earth is removed. Sand that has slumped in and water that has run in belong to the
+    // simulation now, and clearing them here would quietly destroy matter every time a neighbour
+    // was dug - a corridor could be drained by excavating next to it.
+    private void OpenCeiling(Vector2I tile)
+    {
+        if (!IsOpenGround(tile))
+        {
+            return;
+        }
+
+        Vector2I origin = TileToCellOrigin(tile);
+
+        for (int y = 0; y < MaxCeilingCellRows; y++)
+        {
+            for (int x = 0; x < CellsPerTileAxis; x++)
+            {
+                Vector2I cell = origin + new Vector2I(x, y);
+
+                if (MaterialDatabase.Get(GetCell(cell)).Kind == MaterialKind.Solid)
+                {
+                    SetCell(cell, MaterialId.Air);
+                }
+            }
+        }
+    }
+
+    // No lip where there is nothing above to hang it from.
+    //
+    // Diagonals count, and that is the load-bearing part: a dig route is a staircase of tiles that
+    // meet at a corner, so on a diagonal step the only join between two cavities is that single
+    // corner. Leave the lip in and the corridor is stopped by a few pixels of earth at every step
+    // of the staircase - open ground the ant is routed through and cannot be seen to pass.
+    private bool KeepsCeiling(Vector2I tile)
+    {
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            if (IsOpenGround(tile + new Vector2I(dx, -1)))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool IsOpenGround(Vector2I tile)
+    {
+        GridManager.TileType type = Grid.GetTileAt(tile);
+
+        return type == GridManager.TileType.Tunnel || type == GridManager.TileType.Air;
     }
 
     private void OnTileChipped(Vector2I tile, int removed, int total)
     {
+        // Confined to the channel the finished bore will cut, so a tile part-way through being dug
+        // erodes towards the shape it is going to end up as. Spread over the whole tile instead and
+        // the ceiling would be chewed away first and then laid back down by the bore - a roof that
+        // visibly grows back as the digging finishes.
+        System.Span<int> tops = stackalloc int[CellsPerTileAxis];
+        int channel = 0;
+
+        for (int x = 0; x < CellsPerTileAxis; x++)
+        {
+            tops[x] = CeilingDepthAt(tile, x);
+            channel += CellsPerTileAxis - tops[x];
+        }
+
         // Only materialise a chunk once a tile is genuinely being worked; a glancing first chip on
         // untouched ground is not worth paying for.
-        int cellsToClear = Mathf.Min(CellsPerTile, removed * CellsPerTile / Mathf.Max(1, total));
+        int cellsToClear = Mathf.Min(channel, removed * channel / Mathf.Max(1, total));
 
         Vector2I origin = TileToCellOrigin(tile);
+        int cleared = 0;
 
-        for (int i = 0; i < cellsToClear; i++)
+        for (int i = 0; i < ChipOrder.Length && cleared < cellsToClear; i++)
         {
             int slot = ChipOrder[i];
+            int x = slot % CellsPerTileAxis;
+            int y = slot / CellsPerTileAxis;
 
-            SetCell(origin + new Vector2I(slot % CellsPerTileAxis, slot / CellsPerTileAxis), MaterialId.Air);
+            if (y < tops[x])
+            {
+                continue;
+            }
+
+            SetCell(origin + new Vector2I(x, y), MaterialId.Air);
+            cleared++;
         }
     }
 
@@ -936,16 +1252,36 @@ public partial class MaterialWorld : Node2D
     [Export]
     public bool HaulingEnabled { get; set; }
 
-    // The material a tile is predominantly made of, for a digger to know what she just scraped out.
-    public MaterialId GetTileMaterial(Vector2I tile)
+    // What a digger actually scrapes out of a tile.
+    //
+    // Read off the tile type, not off the matter. It used to sample the cell at the middle of the
+    // tile - and chipping clears cells in Bayer-dither order, where the middle cell happens to be
+    // the sixteenth of sixty-four visited, so it was gone by the first or second of the four chips
+    // a tile takes. Every chip after that read back Air and the spoil silently evaporated. Sampling
+    // any single cell has the same shape of bug; the tile type is the only thing that still says
+    // what the tile was made of while it is being taken apart.
+    //
+    // Loose soil rather than packed earth, because spoil has to behave like spoil: LooseDirt is a
+    // powder, so a tipped load slumps into a cone. Dirt is deliberately Solid - a heap of it would
+    // stand up in mid-air as a stack of cubes.
+    public MaterialId SpoilFor(Vector2I tile)
     {
-        return GetCell(TileToCellOrigin(tile) + new Vector2I(CellsPerTileAxis / 2, CellsPerTileAxis / 2));
+        return Grid != null && Grid.CanDig(tile) ? MaterialId.LooseDirt : MaterialId.Air;
     }
 
     // Scrapes loose material into an open tile. Returns how many cells found room; any beyond that
     // had nowhere to go, and the caller keeps them.
     public int EmitInto(Vector2I tile, int count, MaterialId material)
     {
+        // Air is not a material you can put somewhere. Without this the loop below sails past its
+        // own IsAir guard, SetCell short-circuits because the cell is already air, and placed++
+        // runs anyway - so it reported placing matter it had not placed, and the caller threw away
+        // the load it was still holding.
+        if (MaterialDatabase.Get(material).IsAir)
+        {
+            return 0;
+        }
+
         Vector2I origin = TileToCellOrigin(tile);
         int placed = 0;
 
@@ -984,7 +1320,10 @@ public partial class MaterialWorld : Node2D
                 MaterialId id = GetCell(cell);
                 MaterialDefinition definition = MaterialDatabase.Get(id);
 
-                if (definition.IsAir || definition.Kind == MaterialKind.Solid)
+                // Powder only. It used to be "anything that is not solid", which included liquids -
+                // so a digger who broke into a water pocket carried the water off in her jaws and
+                // tipped it on the spoil heap.
+                if (definition.Kind != MaterialKind.Powder)
                 {
                     continue;
                 }
@@ -998,25 +1337,81 @@ public partial class MaterialWorld : Node2D
         return taken;
     }
 
-    // Tips a carried load out, working upward as the lower tiles fill in.
-    public void Release(Vector2I tile, List<MaterialId> materials)
+
+    // Tips a load out where it lies, sky rule or not.
+    //
+    // Release is deliberately sky-only, so an ant who dies underground would take her load out of
+    // existence - and matter conservation here is checked to the cell. A dead ant is not making a
+    // decision about where her spoil belongs; it falls off her.
+    public int Spill(Vector2I tile, List<MaterialId> materials)
     {
-        const int MaxTilesSearched = 6;
+        int kept = 0;
 
-        foreach (MaterialId material in materials)
+        for (int i = 0; i < materials.Count; i++)
         {
-            for (int up = 0; up < MaxTilesSearched; up++)
-            {
-                Vector2I target = tile - new Vector2I(0, up);
+            MaterialId material = materials[i];
 
-                if (!Grid.IsInBounds(target) || EmitInto(target, 1, material) > 0)
-                {
-                    break;
-                }
+            if (EmitInto(tile, 1, material) == 0)
+            {
+                materials[kept++] = material;
             }
         }
 
-        materials.Clear();
+        materials.RemoveRange(kept, materials.Count - kept);
+
+        return kept;
+    }
+    // Tips a carried load out, working upward as the lower tiles fill in. Returns how many grains
+    // had nowhere to go; those are still in the list, and still hers.
+    //
+    // It used to return void and clear the list unconditionally, so every grain it could not place -
+    // because the column was full, or because it walked off the top of the world - was deleted with
+    // no accounting anywhere. Matter conservation in this game is a settling invariant that the
+    // tests check to the cell, and this was a hole straight through it.
+    public int Release(Vector2I tile, List<MaterialId> materials)
+    {
+        // As far up as the sky goes. Six tiles was arbitrary and too few: a mature spoil heap is
+        // taller than that, and every grain past the sixth tile was the leak above.
+        int maxTilesSearched = Grid != null ? Grid.SurfaceHeight : 6;
+        int kept = 0;
+
+        // Indexed rather than foreach, because the list is compacted as it is walked and enumerating
+        // a list you are writing to throws.
+        for (int i = 0; i < materials.Count; i++)
+        {
+            MaterialId material = materials[i];
+            bool placed = false;
+
+            for (int up = 0; up < maxTilesSearched && !placed; up++)
+            {
+                Vector2I target = tile - new Vector2I(0, up);
+
+                if (!Grid.IsInBounds(target))
+                {
+                    break;
+                }
+
+                // Sky only. This is the guard that makes spoil in a corridor impossible rather than
+                // merely unlikely - every load in the game goes through here.
+                if (!Grid.IsSpoilTile(target))
+                {
+                    continue;
+                }
+
+                placed = EmitInto(target, 1, material) > 0;
+            }
+
+            if (!placed)
+            {
+                // Compacted in place, so a partly-tipped load costs no allocation. kept never runs
+                // ahead of i, so this only ever overwrites a grain already dealt with.
+                materials[kept++] = material;
+            }
+        }
+
+        materials.RemoveRange(kept, materials.Count - kept);
+
+        return kept;
     }
 
     // ---- destruction ------------------------------------------------------------------------

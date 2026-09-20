@@ -163,8 +163,15 @@ public static class MaterialDatabase
             Id = MaterialId.HardenedDirt,
             Name = "Hardened Earth",
             Kind = MaterialKind.Solid,
-            // Grey-brown, like the cemented nest walls real ants build out of soil and saliva.
-            Colour = new Color("5a4a3c"),
+            // Dried clay plaster, and considerably paler than it was.
+            //
+            // It used to be 5a4a3c, a desaturated version of dirt's own 6b4a32 - within a few
+            // percent of it in brightness, and drifting towards stone's 6d675e as well. Ants
+            // cementing their walls is meant to be something you watch happen, and photographed
+            // against the soil it was cemented out of, it was invisible. This is lighter than both
+            // dirt and stone and warmer and greyer than sand, so it reads against the dark cavity
+            // it lines and against the earth behind it.
+            Colour = new Color("a08a72"),
             // Denser than packed dirt, which also makes it stand up better to a blast.
             Density = 1900f,
             Diggable = true,

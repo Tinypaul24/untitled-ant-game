@@ -12,10 +12,24 @@ public class SaveData
     public CameraSave Camera { get; set; } = new();
     public float QueenX { get; set; }
     public float QueenY { get; set; }
+
+    // Whether she is on the ground yet, and how far through her current clutch. Save during the
+    // founding flight and she used to come back grounded, laying eggs into a burrow nobody dug.
+    //
+    // Defaulted true and deliberately not version-bumped: System.Text.Json leaves an absent property
+    // at its C# default, so every save written before this existed reads back as a grounded queen,
+    // which is what she was. Bumping the version would grey out every one of them in the load menu.
+    public bool QueenGrounded { get; set; } = true;
+    public double QueenLayAccumulator { get; set; }
     public List<AntSave> Ants { get; set; } = new();
     public List<BroodSave> Eggs { get; set; } = new();
     public List<BroodSave> Larvae { get; set; } = new();
     public List<RoomSave> Rooms { get; set; } = new();
+
+    // Cell X, cell Y, batch, repeating - the same packing AddCell/ReadCellValues already use for
+    // grid data. Absent in every save written before the dig tool existed, which reads back as no
+    // designations, correctly.
+    public List<int> Designations { get; set; } = new();
     public MaterialSave Materials { get; set; } = new();
     public float TimeScale { get; set; } = 1f;
     public bool Paused { get; set; }
@@ -69,9 +83,17 @@ public class ColonySave
     public int Larvae { get; set; }
     public int Capacity { get; set; }
     public int NurseryCellTotal { get; set; }
+    public int FungusCellTotal { get; set; }
+    public int RoyalCellTotal { get; set; }
     public int TotalFoodEarned { get; set; }
     public int StarvingIntervalStreak { get; set; }
     public bool LayingEnabled { get; set; }
+
+    // Minus one means "this save predates crew quotas", which is not the same as a player who
+    // deliberately set zero foragers. Absent properties keep their initialiser, so the sentinel
+    // does the version check that the version number deliberately does not.
+    public int ForagerQuota { get; set; } = -1;
+    public int BuilderQuota { get; set; } = -1;
 }
 
 public class ClockSave
@@ -102,6 +124,12 @@ public class AntSave
     public bool HasForageTarget { get; set; }
     public int ForageTargetX { get; set; }
     public int ForageTargetY { get; set; }
+
+    // Absent from a save written before roles existed, which System.Text.Json leaves at the default
+    // - Digger. That is the right answer for an old colony: the first rebalance after the load
+    // moves whoever is needed onto the other trades. No version bump, because SaveSlot.IsReadable
+    // compares versions exactly and raising it would grey out every save anybody already has.
+    public AntRole Role { get; set; }
 }
 
 public class BroodSave

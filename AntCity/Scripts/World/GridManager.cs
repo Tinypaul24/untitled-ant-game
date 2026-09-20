@@ -148,7 +148,15 @@ public partial class GridManager : Node2D
 
     // Solid cells are made of GrainsPerCell small pieces that ants chip out one at a time,
     // so a wall visibly crumbles instead of flipping to open tunnel in one step.
-    public const int GrainsPerCell = 4;
+    //
+    // Sixteen, not four, because a tile is now a job rather than a moment. The counter has no owner
+    // - whoever swings takes the next grain - so four workers on one face get through it in a
+    // quarter of the time one of them would, which is the whole of co-operative digging.
+    //
+    // Must divide MaterialWorld.CellsPerTile exactly. AntWorker.GrainsPerDigTick is CellsPerTile
+    // over this, in integer arithmetic, and a remainder is spoil that is dug out of the world and
+    // never picked up by anybody.
+    public const int GrainsPerCell = 16;
 
     private readonly Dictionary<Vector2I, int> grainsRemoved = new();
 
@@ -169,6 +177,12 @@ public partial class GridManager : Node2D
         InitializeNoise();
 
         NestCenterCell = SurfaceNestCell;
+
+        // So the colony can pick who starves without having to know the grid exists.
+        if (ColonyManager != null)
+        {
+            ColonyManager.NestPosition = CellToWorld(NestCenterCell);
+        }
 
         // Pre-generate enough terrain around the nest to fill the initial view; everything further
         // out is generated on demand as ants path or dig toward it, so the map keeps expanding.
@@ -220,6 +234,41 @@ public partial class GridManager : Node2D
         return IsInBounds(cell) && IsWalkable(GetTile(cell));
     }
 
+    // Somewhere a load may be tipped.
+    //
+    // Spoil belongs on the surface, and this is the invariant that makes it so. Every load goes
+    // through it, so soil cannot end up in a corridor however the hauling code is rearranged - which
+    // is the failure that had this whole feature switched off, and it deserves to be impossible
+    // rather than merely avoided.
+    //
+    // Open sky, and not a tile somebody dug: a heap tipped into a dug-out sky tile would be an ant
+    // filling in the hole she had just climbed out of.
+    public bool IsSpoilTile(Vector2I tile)
+    {
+        return tile.Y >= 0
+            && tile.Y < SurfaceHeight - GrassDepth
+            && GetTile(tile) != TileType.Tunnel
+            && !IsEntranceApron(tile);
+    }
+
+    // The doorstep. Kept clear of spoil, because a hill grown over the nest mouth is a colony that
+    // has buried its own way in.
+    public bool IsEntranceApron(Vector2I tile)
+    {
+        return Mathf.Abs(tile.X - NestCenterCell.X) <= EntranceClearTiles;
+    }
+
+    // The doorstep proper: the apron at or above the turf line, which is the ground a forager has
+    // to cross to get in or out. Below that is the shaft, and a tile going solid down there is
+    // ordinary cave-in business rather than the colony being shut out of its own nest.
+    public bool IsDoorstep(Vector2I tile)
+    {
+        return IsEntranceApron(tile) && tile.Y <= SurfaceHeight - GrassDepth;
+    }
+
+    // How wide the clear apron around the entrance is, in tiles.
+    private const int EntranceClearTiles = 3;
+
     // Fired when terrain changes at runtime, so overlays know to redraw.
     [Signal]
     public delegate void TerrainChangedEventHandler();
@@ -264,7 +313,17 @@ public partial class GridManager : Node2D
 
         grainsRemoved.Remove(cell);
 
-        SetTile(cell, TileType.Tunnel);
+        // Digging into a spoil heap leaves sky, not tunnel.
+        //
+        // This was Tunnel unconditionally, which is wrong above the surface and self-perpetuating:
+        // an ant buried by a tipped load digs herself out, that sky tile is now marked Tunnel, and
+        // the next spoil to land in it makes SetTileFromSimulation see `previous == Tunnel` and
+        // report a blocked passage. That queues a dig job, which opens it again, which lets more
+        // spoil in. The whole loop comes from one tile being labelled as a corridor because
+        // somebody dug it.
+        //
+        // Matches what the simulation already does for its own writes - see PassableTileFor.
+        SetTile(cell, cell.Y < SurfaceHeight - GrassDepth ? TileType.Air : TileType.Tunnel);
 
         // Tunnelling into a food source salvages it rather than throwing it away.
         //
@@ -322,7 +381,12 @@ public partial class GridManager : Node2D
         // A tunnel the colony dug that has just been filled in is a blockage, not scenery. Sand
         // sliding down the entrance ramp could otherwise seal the only way in or out with nothing
         // in the game able to respond to it.
-        if (previous == TileType.Tunnel && !IsWalkable(type))
+        //
+        // The doorstep counts whatever it was before. Spoil slumping off the hill onto the ground
+        // outside the nest mouth was never a tunnel, so the test above would ignore it - and a
+        // colony that has walled itself out of its own front door starves without anything
+        // noticing. Real ants keep their entrance clear; now so do these.
+        if (!IsWalkable(type) && (previous == TileType.Tunnel || IsDoorstep(cell)))
         {
             EmitSignal(SignalName.TileObstructed, cell);
         }
@@ -362,11 +426,86 @@ public partial class GridManager : Node2D
     }
 
 
+
+    // ---- the dead ------------------------------------------------------------------------------
+    //
+    // Bodies are tracked in their own map rather than as a food tile type. Food tiles are diggable
+    // and not walkable, so turning the cell an ant died in into one would wall off the corridor she
+    // died in - and a corpse is meant to be something you walk up to, not something you excavate.
+    //
+    // Everything else about them goes through the ordinary forage pipeline: IsFoodSource,
+    // GetFoodAmount, Harvest and TryFindForageTarget all consult this, so a forager treats a body
+    // exactly as she treats a seed cache and none of her code had to learn what a corpse is.
+    private readonly Dictionary<Vector2I, int> carrionRemaining = new();
+
+    // Whether the colony eats its dead or carries them out to the refuse heap. The player's call -
+    // real ants do both, depending on how hungry they are.
+    public bool EatTheDead { get; set; }
+
+    public void AddCarrion(Vector2I cell, int food)
+    {
+        carrionRemaining.TryGetValue(cell, out int already);
+        carrionRemaining[cell] = already + food;
+
+        EmitSignal(SignalName.TerrainChanged);
+    }
+
+    public void RemoveCarrion(Vector2I cell)
+    {
+        if (carrionRemaining.Remove(cell))
+        {
+            claimedForageCells.Remove(cell);
+            EmitSignal(SignalName.TerrainChanged);
+        }
+    }
+
+    public int CarrionAt(Vector2I cell)
+    {
+        return carrionRemaining.TryGetValue(cell, out int food) ? food : 0;
+    }
+
+    public bool IsCarrion(Vector2I cell) => CarrionAt(cell) > 0;
+
+    // The nearest body nobody has gone for yet, whatever the policy is. Used by the workers who
+    // carry the dead out, which is what happens when the colony is not eating them.
+    public bool TryFindCarrion(Vector2 fromPosition, float maxDistance, out Vector2I cell)
+    {
+        cell = default;
+
+        float bestDistance = maxDistance * maxDistance;
+        bool found = false;
+
+        foreach (System.Collections.Generic.KeyValuePair<Vector2I, int> entry in carrionRemaining)
+        {
+            if (claimedForageCells.Contains(entry.Key))
+            {
+                continue;
+            }
+
+            float distance = CellToWorld(entry.Key).DistanceSquaredTo(fromPosition);
+
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                cell = entry.Key;
+                found = true;
+            }
+        }
+
+        return found;
+    }
     public bool IsFoodSource(Vector2I cell)
     {
         if (!IsInBounds(cell))
         {
             return false;
+        }
+
+        // A body the colony is willing to eat counts as a source. When the policy is to carry the
+        // dead out instead, it is refuse rather than food and foragers ignore it.
+        if (EatTheDead && IsCarrion(cell))
+        {
+            return true;
         }
 
         TileType type = GetTile(cell);
@@ -375,6 +514,11 @@ public partial class GridManager : Node2D
 
     public int GetFoodAmount(Vector2I cell)
     {
+        if (EatTheDead && IsCarrion(cell))
+        {
+            return CarrionAt(cell);
+        }
+
         return foodRemaining.TryGetValue(cell, out int amount) ? amount : 0;
     }
 
@@ -424,11 +568,44 @@ public partial class GridManager : Node2D
             }
         }
 
+        // And the dead, when the colony is eating them. Same loop, same claim rules - a body is just
+        // another thing worth walking to.
+        if (EatTheDead)
+        {
+            foreach (KeyValuePair<Vector2I, int> entry in carrionRemaining)
+            {
+                if (claimedForageCells.Contains(entry.Key))
+                {
+                    continue;
+                }
+
+                float distance = CellToWorld(entry.Key).DistanceSquaredTo(fromPosition);
+
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    cell = entry.Key;
+                    found = true;
+                }
+            }
+        }
+
         return found;
     }
 
     // One worker per source: a deposit holds a load or two, so a second ant on it would just walk
     // out there and find nothing left.
+
+    // Forage claims belong to the ants that made them, and those ants are about to be freed.
+    //
+    // RestoreState clears the grid, the food and the dig progress but never this, so every cell a
+    // forager had claimed when the save was loaded stayed claimed for the rest of the session -
+    // and TryFindForageTarget skips claimed cells, so those deposits became permanently invisible
+    // to the whole colony.
+    public void ResetTransientState()
+    {
+        claimedForageCells.Clear();
+    }
     public void ClaimForageCell(Vector2I cell)
     {
         claimedForageCells.Add(cell);
@@ -449,10 +626,9 @@ public partial class GridManager : Node2D
     public Vector2I FindSpoilDropOff(Vector2I from)
     {
         const int MaxVisited = 4000;
-        const int PreferredSpread = 6;
 
         Vector2I best = from;
-        int bestScore = SpoilDropScore(from, PreferredSpread);
+        int bestScore = SpoilDropScore(from);
 
         var visited = new HashSet<Vector2I> { from };
         var frontier = new Queue<Vector2I>();
@@ -474,7 +650,7 @@ public partial class GridManager : Node2D
                 visited.Add(next);
                 frontier.Enqueue(next);
 
-                int score = SpoilDropScore(next, PreferredSpread);
+                int score = SpoilDropScore(next);
 
                 if (score < bestScore)
                 {
@@ -487,35 +663,110 @@ public partial class GridManager : Node2D
         return best;
     }
 
-    // Lower is better. Getting out of the burrow is what matters, so every cell at or above the
-    // surface counts as equally good height-wise and the tie is broken by walking a few cells clear
-    // of the nest column - otherwise a hauler would trek across the map to reach one perch that
-    // happens to sit a single row higher.
-    private int SpoilDropScore(Vector2I cell, int preferredSpread)
+    // Lower is better. Getting out of the burrow is what matters most, so depth dominates and every
+    // cell at or above the surface ties; the tie is broken by how far the cell sits from the band
+    // the hill is meant to grow in.
+    //
+    // It used to *maximise* distance from the nest column, capped at six tiles, which spread every
+    // load as far out as a hauler could be bothered to walk. That is the right instinct for keeping
+    // a heap off the doorstep and the wrong one for building a hill: spoil scattered over twelve
+    // tiles is a mess, not a fortress. A band does both - every load joins one mound, and the mound
+    // starts far enough out that it never grows across the way in.
+    private int SpoilDropScore(Vector2I cell)
     {
-        int height = Mathf.Max(cell.Y, SurfaceHeight - 1);
-        int lateral = Mathf.Min(Mathf.Abs(cell.X - NestCenterCell.X), preferredSpread);
+        int depth = Mathf.Max(0, cell.Y - (SurfaceHeight - GrassDepth));
+        int lateral = Mathf.Abs(cell.X - NestCenterCell.X);
 
-        return height * 100 - lateral;
+        int offBand = lateral < MoundInnerTiles ? MoundInnerTiles - lateral
+            : lateral > MoundOuterTiles ? lateral - MoundOuterTiles
+            : 0;
+
+        return depth * 100 + offBand * 10;
+    }
+
+    // Where the hill is meant to stand: an annulus around the entrance column. Inside it is the
+    // apron the ants keep clear; outside it, a load would be walked further than it is worth.
+    private const int MoundInnerTiles = 5;
+    private const int MoundOuterTiles = 9;
+
+    // How far either side of the entrance the hill can plausibly reach, for anything that needs to
+    // work over the whole of it. Wider than the drop band, because a tipped cone slumps outward.
+    public int MoundSpanTiles => MoundOuterTiles + 4;
+
+    // Whether a load tipped from here would actually land anywhere.
+    //
+    // The drop-off search returns the best cell it can *reach*, and an ant sealed in a half-dug
+    // chamber can reach nothing above ground - so it hands back somewhere eight tiles down. She
+    // then walks there, the sky-only guard quite correctly refuses to tip soil into a corridor, and
+    // she keeps the load; and because her load is full, she takes that same walk to nothing again
+    // on the very next dig tick. Measured, that was thirty-five thousand grains of shuttling in
+    // four minutes.
+    //
+    // Better to know before setting off. She keeps carrying and keeps working, and the trip becomes
+    // possible again the moment somebody digs the corridor that reaches daylight.
+    public bool IsViableSpoilDropOff(Vector2I cell)
+    {
+        if (cell.Y > SurfaceHeight - GrassDepth)
+        {
+            return false;
+        }
+
+        int awayFromNest = cell.X < NestCenterCell.X ? -1 : 1;
+
+        return !IsEntranceApron(cell + new Vector2I(awayFromNest, 0))
+            || !IsEntranceApron(cell + new Vector2I(awayFromNest * 2, 0));
+    }
+
+    // The nearest patch of standable surface, for anything that wants "somewhere out in the open"
+    // without caring where spoil goes.
+    //
+    // Split out from FindSpoilDropOff because four tests were borrowing that as a general route
+    // destination, two of them asserting how long the route was - so tuning where the colony tips
+    // its earth was quietly breaking pathfinding tests that have nothing to do with spoil.
+    // minTilesAway exists because the nest itself sits on the surface row, so "nearest standable
+    // surface" from the nest is the nest - and a caller after a route to walk gets one cell.
+    public Vector2I FindNearestSurfaceStanding(Vector2I from, int minTilesAway = 0)
+    {
+        const int MaxVisited = 4000;
+
+        int surfaceRow = SurfaceHeight - GrassDepth;
+
+        var visited = new HashSet<Vector2I> { from };
+        var frontier = new Queue<Vector2I>();
+        frontier.Enqueue(from);
+
+        while (frontier.Count > 0 && visited.Count < MaxVisited)
+        {
+            Vector2I current = frontier.Dequeue();
+
+            if (current.Y <= surfaceRow &&
+                Mathf.Abs(current.X - from.X) >= minTilesAway &&
+                IsSafelyStandable(current))
+            {
+                return current;
+            }
+
+            foreach (Vector2I direction in MoveDirections)
+            {
+                Vector2I next = current + direction;
+
+                if (visited.Contains(next) || !IsSafelyStandable(next))
+                {
+                    continue;
+                }
+
+                visited.Add(next);
+                frontier.Enqueue(next);
+            }
+        }
+
+        return from;
     }
 
 
     public TileType GetTileAt(Vector2I cell)
     {
         return GetTile(cell);
-    }
-
-    // Loose grains have filled this cell right up, so it becomes ordinary solid ground again.
-    public void PackCellToDirt(Vector2I cell)
-    {
-        if (!IsInBounds(cell))
-        {
-            return;
-        }
-
-        grainsRemoved.Remove(cell);
-        SetTile(cell, TileType.Dirt);
-        EmitSignal(SignalName.TerrainChanged);
     }
 
     private static bool IsFoodTileType(TileType type)
@@ -543,6 +794,22 @@ public partial class GridManager : Node2D
         int available = GetFoodAmount(cell);
         int harvested = Mathf.Min(amount, available);
         int remaining = available - harvested;
+
+        // A body is eaten rather than mined: no tile changes hands, the corpse node simply notices
+        // it has been picked clean and removes itself.
+        if (EatTheDead && IsCarrion(cell))
+        {
+            if (remaining <= 0)
+            {
+                RemoveCarrion(cell);
+            }
+            else
+            {
+                carrionRemaining[cell] = remaining;
+            }
+
+            return harvested;
+        }
 
         if (remaining <= 0)
         {
@@ -775,36 +1042,6 @@ public partial class GridManager : Node2D
         }
 
         GD.Print("Colony landed on the surface.");
-    }
-
-    // A zigzag staircase from the chamber up to daylight. Each row steps one cell sideways, so every
-    // move along it is a diagonal an ant can walk, and the whole thing stays two cells wide.
-    private void CarveEntranceRamp(int floorY)
-    {
-        int rampX = NestCenterCell.X + 2;
-
-        for (int y = floorY; y >= SurfaceHeight - 1; y--)
-        {
-            ForceDig(new Vector2I(rampX + ((floorY - y) % 2), y));
-        }
-    }
-
-    private void ClearSurfaceEntrance()
-    {
-        int surfaceRow = SurfaceHeight - 1;
-
-        if (surfaceRow < 0)
-        {
-            return;
-        }
-
-        // Entrance, plus the dump cell and pile column beside it, so haulers always have clear ground.
-        for (int x = NestCenterCell.X - 1; x <= NestCenterCell.X + 6; x++)
-        {
-            Vector2I cell = new Vector2I(x, surfaceRow);
-            foodRemaining.Remove(cell);
-            SetTile(cell, TileType.Grass);
-        }
     }
 
     // Used by world generation to guarantee the nest and its entrance shaft are always clear.

@@ -44,6 +44,7 @@ public partial class MiniMap : Control
 
     private Vector2 lastOrigin = new(float.MaxValue, float.MaxValue);
     private double sinceRefresh = RefreshSeconds;
+    private ulong lastRefreshTicks;
 
     public override void _Ready()
     {
@@ -52,7 +53,12 @@ public partial class MiniMap : Control
 
     public override void _Process(double delta)
     {
-        sinceRefresh += delta;
+        // Real seconds, not scaled ones. _Process delta is multiplied by Engine.TimeScale, so the
+        // documented twice-a-second refresh became eight times a second at 4x - eight times the cost
+        // the food bucketing exists to avoid - and never at all while paused.
+        ulong now = Time.GetTicksUsec();
+        sinceRefresh += lastRefreshTicks == 0 ? RefreshSeconds : (now - lastRefreshTicks) / 1_000_000.0;
+        lastRefreshTicks = now;
 
         bool moved = camera.GlobalPosition.DistanceSquaredTo(lastOrigin) >= RedrawMoveThreshold * RedrawMoveThreshold;
 

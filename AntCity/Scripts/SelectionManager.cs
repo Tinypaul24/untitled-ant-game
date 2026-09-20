@@ -27,6 +27,43 @@ public partial class SelectionManager : Node2D
         GetViewport().PhysicsObjectPicking = true;
     }
 
+
+    // The button can come up somewhere this node never hears about.
+    //
+    // Releases only reach _UnhandledInput if no Control ate them first, and every panel in the HUD
+    // eats them by default - the top bar, the build tray, the room inspector, the pause menu's
+    // full-screen dim. Drag from the world down over the bottom bar, let go there, and the marquee
+    // stayed armed: it kept drawing, kept extending from the stale anchor on every mouse move, and
+    // the next genuine click in the world box-selected everything between the two.
+    //
+    // Polled rather than routed differently, because moving the handler to _Input would reorder this
+    // node against the whole HUD to fix one stuck flag. _Process is still called at TimeScale zero
+    // and this check uses no delta, so it works while paused too.
+
+    // An ant who no longer exists.
+    //
+    // selectedAnts is the only long-lived reference to a worker outside the scene tree, so it is the
+    // one place a freed ant could linger and be dereferenced later. Nothing used to free an ant at
+    // all, which is why this never mattered until they started dying.
+    public void Forget(AntWorker ant)
+    {
+        if (selectedAnts.Contains(ant))
+        {
+            RemoveFromSelection(ant);
+        }
+    }
+    public override void _Process(double delta)
+    {
+        if (!isPressed || Input.IsMouseButtonPressed(MouseButton.Left))
+        {
+            return;
+        }
+
+        isPressed = false;
+        isDragging = false;
+
+        QueueRedraw();
+    }
     public override void _UnhandledInput(InputEvent @event)
     {
         if (@event is InputEventMouseButton mouseButton)

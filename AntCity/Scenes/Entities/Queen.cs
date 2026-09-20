@@ -13,6 +13,9 @@ public partial class Queen : Node2D
     private ColonyManager colonyManager;
     private double layAccumulator;
 
+    // Saved, so a reload does not reset the clutch timer or land a queen who was still in the air.
+    public double LayAccumulator { get => layAccumulator; set => layAccumulator = value; }
+
     // False while she is still on the wing or cutting the first shaft. A queen mid-flight has no
     // nest to lay in, and an egg dropped on the lawn would have nowhere to go.
     public bool Grounded { get; set; } = true;
@@ -34,7 +37,9 @@ public partial class Queen : Node2D
 
         layAccumulator += delta;
 
-        if (layAccumulator < LayIntervalSeconds)
+        // Divided by the multiplier rather than the interval being scaled, so a Royal Chamber built
+        // mid-wait takes effect on the clutch she is already working on instead of the one after.
+        if (layAccumulator < LayIntervalSeconds / colonyManager.LaySpeedMultiplier)
         {
             return;
         }

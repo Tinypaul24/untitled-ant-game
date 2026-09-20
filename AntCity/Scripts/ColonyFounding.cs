@@ -37,7 +37,13 @@ public partial class ColonyFounding : Node
     private static readonly PackedScene AntWorkerScene =
         GD.Load<PackedScene>("res://AntCity/Scenes/Entities/AntWorker.tscn");
 
-    [Export] public int StartingWorkers { get; set; } = 3;
+    // Enough to be a colony rather than a trio.
+    //
+    // Three could not form a dig team of four, let alone form one and still have anybody left to
+    // fetch food. Eight costs sixteen food an hour against a forager who brings in roughly thirty
+    // seven a minute, so the opening is comfortably affordable - food has never been the scarce
+    // thing here.
+    [Export] public int StartingWorkers { get; set; } = 8;
 
     private GridManager grid;
     private ColonyManager colony;
@@ -51,6 +57,21 @@ public partial class ColonyFounding : Node
     private readonly Queue<Vector2I> toDig = new();
 
     public bool Finished => phase == Phase.Done;
+
+    // Stop founding, without founding.
+    //
+    // A load during the six-second intro used to leave this running: it carried on cutting its
+    // queued shaft into the restored world, teleported the Queen off her restored position, spawned
+    // another set of starting workers on top of the restored population and re-announced the colony
+    // as founded - on a save that might be an hour old.
+    //
+    // Deliberately not FinishFounding, which is what does the spawning and the announcing. This is
+    // "that colony is not being founded any more", not "it finished".
+    public void AbortForLoad()
+    {
+        toDig.Clear();
+        phase = Phase.Done;
+    }
 
     // Skips the arrival and cuts the burrow in one go.
     //
@@ -172,9 +193,23 @@ public partial class ColonyFounding : Node
     {
         Vector2I surface = grid.NestCenterCell;
 
+        // Two tiles tall, like every corridor the workers will cut after her. Headroom before
+        // floor, for the same reason the chamber below does it in that order: a shaft that opens
+        // its floor first is briefly a sealed pocket.
         for (int step = 1; step <= ShaftDepth; step++)
         {
-            toDig.Enqueue(surface + new Vector2I(step, step));
+            Vector2I tread = surface + new Vector2I(step, step);
+
+            // Same rule the workers dig by. It refuses the top treads, whose roof would be the
+            // lawn beside her own front door, so the shaft runs low for its first couple of steps
+            // and opens up once it is clear of the surface - which is what a real burrow entrance
+            // does anyway.
+            if (grid.ShouldOpenHeadroom(tread))
+            {
+                toDig.Enqueue(tread + new Vector2I(0, -1));
+            }
+
+            toDig.Enqueue(tread);
         }
 
         Vector2I floor = surface + new Vector2I(ShaftDepth, ShaftDepth);

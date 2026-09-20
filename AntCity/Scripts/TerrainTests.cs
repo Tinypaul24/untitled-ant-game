@@ -35,9 +35,24 @@ public partial class TerrainTests : Node
         ChippingEatsAWholeTile();
         GrassBurnsAndStaysOnTheSurface();
         DiggingLeavesCleanTunnels();
+        BoredTunnelsLeaveNothingHanging();
+        SpoilIsWhatTheTileIsMadeOf();
+        ReleaseHandsBackWhatItCannotPlace();
+        DiggingInTheSkyLeavesSky();
         NestWallsCementThemselves();
         RoomsCanBePlacedAndFinished();
+        RoomsNeedWallsAroundThem();
+        RoomWallsCementThemselves();
+        AnIdleAntAlwaysFindsSomethingToDo();
+        EveryRoleStillHasSomethingToDo();
+        PullingDownARoomDoesNotStrandItsBuilder();
+        ReleasingAClaimKeepsTheJob();
+        ARoomGivesUpOnGroundThatTurnedToRock();
+        AStarvedAntTakesHerClaimsWithHer();
+        SmoothedRoutesStayWalkable();
+        RoutesDoNotBobUpAndDown();
         DugCorridorsStayWalkable();
+        CorridorsAreCutTwoTilesTall();
         SaveRoundTripRebuildsTheWorld();
 
         GD.Print($"--- {passed} passed, {failed} failed ---");
@@ -183,6 +198,92 @@ public partial class TerrainTests : Node
     }
 
 
+    // A corridor is cut two tiles tall, and still behaves like a corridor afterwards.
+    //
+    // The shape matters as much as the fact of it. A stacked pair must come out as one cavity with
+    // a single ragged lip on top, not as two boxes with a slab of earth floating between them -
+    // that slab is the "small squares in the tunnel" this game has had before. MaterialWorld
+    // already handles that case, and this is what pins it to the way corridors are now dug.
+    private void CorridorsAreCutTwoTilesTall()
+    {
+        Vector2I nest = grid.NestCenterCell;
+        Vector2I target = FindDiggableNear(nest + new Vector2I(14, 20));
+        List<Vector2I> plan = grid.PlanDigRoute(nest, target);
+
+        if (plan == null)
+        {
+            Check(false, "a deep corridor can be planned");
+            return;
+        }
+
+        var roofed = new List<Vector2I>();
+        Vector2I cursor = nest;
+
+        // Exactly what OnDigTimeout does: open the floor cell, then ask whether it gets headroom.
+        // Asking before the floor is open would be asking a different question.
+        foreach (Vector2I cell in plan)
+        {
+            grid.Dig(cell);
+
+            if (grid.ShouldOpenHeadroom(cell))
+            {
+                grid.Dig(cell + new Vector2I(0, -1));
+                roofed.Add(cell);
+            }
+
+            if (grid.IsStandable(cell))
+            {
+                cursor = cell;
+            }
+        }
+
+        // Derived, not settled. The question here is the shape the bore leaves behind; stepping the
+        // simulation first lets loose earth slump into the cavity, and soil lying on the floor of a
+        // corridor is the simulation working, not a slab hanging from its ceiling.
+        materials.DeriveDirtyTiles();
+
+        Check(roofed.Count > 0, "a corridor run gets headroom at all", $"{roofed.Count} of {plan.Count} cells roofed");
+
+        if (roofed.Count == 0)
+        {
+            return;
+        }
+
+        int unstandableFloor = 0;
+        int standableRoof = 0;
+        int slabsLeftHanging = 0;
+
+        foreach (Vector2I floor in roofed)
+        {
+            Vector2I roof = floor + new Vector2I(0, -1);
+
+            // She walks the floor; the roof is headroom and nothing should ever stand in it.
+            if (!grid.IsStandable(floor))
+            {
+                unstandableFloor++;
+            }
+
+            if (grid.IsStandable(roof))
+            {
+                standableRoof++;
+            }
+
+            // The lip belongs on top of the cavity, not in the middle of it. Counted the same way
+            // BoredTunnelsLeaveNothingHanging counts it - the ceiling rows alone - because earth
+            // left up there with an open roof above it is a slab floating in the corridor.
+            slabsLeftHanging += CountSolidCells(floor) - CountSolidCells(floor, MaterialWorld.MaxCeilingCellRows);
+        }
+
+        Check(unstandableFloor == 0, "every roofed corridor cell is still standable", $"{unstandableFloor} were not");
+        Check(standableRoof == 0, "nothing stands in the headroom", $"{standableRoof} roof cells were standable");
+        Check(slabsLeftHanging == 0, "no slab is left hanging inside a two-tall corridor", $"{slabsLeftHanging} cells");
+
+        // And the whole point: taking the roof off must not have stranded the digger who cut it.
+        Check(grid.IsStandable(cursor), "the digger ends a two-tall corridor on solid footing");
+        Check(grid.FindTunnelPath(cursor, grid.FindNearestSurfaceStanding(cursor, 8)) != null,
+            "a two-tall corridor still leads home");
+    }
+
     private void DugCorridorsStayWalkable()
     {
         Vector2I nest = grid.NestCenterCell;
@@ -242,7 +343,7 @@ public partial class TerrainTests : Node
 
             Check(!grid.CanDig(target), $"dig to {offset} opens its target");
             Check(grid.IsStandable(cursor), $"digger at {offset} ends on solid footing");
-            Check(grid.FindTunnelPath(cursor, grid.FindSpoilDropOff(cursor)) != null, $"digger at {offset} can get home");
+            Check(grid.FindTunnelPath(cursor, grid.FindNearestSurfaceStanding(cursor)) != null, $"digger at {offset} can get home");
         }
     }
 
@@ -344,6 +445,32 @@ public partial class TerrainTests : Node
         return wanted;
     }
 
+    // A diggable tile with solid earth over it, including diagonally - the condition under which a
+    // bore keeps its ceiling.
+    private Vector2I FindBuriedDiggableNear(Vector2I wanted)
+    {
+        for (int radius = 0; radius < 8; radius++)
+        {
+            for (int dy = -radius; dy <= radius; dy++)
+            {
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    Vector2I candidate = wanted + new Vector2I(dx, dy);
+
+                    if (grid.CanDig(candidate) &&
+                        grid.CanDig(candidate + new Vector2I(-1, -1)) &&
+                        grid.CanDig(candidate + new Vector2I(0, -1)) &&
+                        grid.CanDig(candidate + new Vector2I(1, -1)))
+                    {
+                        return candidate;
+                    }
+                }
+            }
+        }
+
+        return wanted;
+    }
+
     private bool IsWalkableRoute(List<Vector2I> route)
     {
         for (int i = 1; i < route.Count; i++)
@@ -415,11 +542,16 @@ public partial class TerrainTests : Node
         // route is already proven walkable by the first test - a hand-dug one has to satisfy the
         // no-climbing rules itself, and getting that subtly wrong tests the setup, not the hazard.
         Vector2I from = nest;
-        Vector2I to = grid.FindSpoilDropOff(nest);
+        Vector2I to = grid.FindNearestSurfaceStanding(nest, 8);
 
-        List<Vector2I> before = grid.FindTunnelPath(from, to);
+        // Expanded to the cells the route actually crosses. Routes are simplified down to their
+        // corners now, so the returned list is no longer every cell she walks over - a mid-point
+        // taken from it straight would often be an endpoint, and "does the route contain the lava
+        // tile" would miss a segment that passes straight over it.
+        List<Vector2I> before = ExpandRoute(grid.FindTunnelPath(from, to));
 
-        Check(before != null && before.Count > 2, "the test route is walkable before any lava");
+        Check(before != null && before.Count > 2, "the test route is walkable before any lava",
+            $"{before?.Count ?? 0} cells crossed");
 
         if (before == null || before.Count <= 2)
         {
@@ -435,7 +567,7 @@ public partial class TerrainTests : Node
 
         // A null route is a pass, not a failure: if the only way through is the flooded cell, then
         // there genuinely is no way through, and saying so is better than marching her into it.
-        List<Vector2I> after = grid.FindTunnelPath(from, to);
+        List<Vector2I> after = ExpandRoute(grid.FindTunnelPath(from, to));
 
         Check(after == null || !after.Contains(blocked), "no route is planned through lava");
 
@@ -476,19 +608,28 @@ public partial class TerrainTests : Node
 
         materials.DeriveDirtyTiles();
 
-        int after = CountSolidCells(tile);
+        // The channel, not the whole tile. A bored tunnel deliberately keeps a lip of earth
+        // overhead so the corridor is the size of the ant rather than the size of the tile - what
+        // has to be empty is the part she walks through.
+        int channelLeft = CountSolidCells(tile, MaterialWorld.MaxCeilingCellRows);
+        int wholeTile = CountSolidCells(tile, 0);
 
         Check(before > 0, "the tile started out solid", $"{before} solid cells");
-        Check(after == 0, "chipping clears every cell of the tile", $"{after} cells left");
+        Check(channelLeft == 0, "chipping clears the whole channel", $"{channelLeft} cells left");
+        Check(
+            wholeTile <= MaterialWorld.MaxCeilingCellRows * MaterialWorld.CellsPerTileAxis,
+            "chipping leaves nothing but the ceiling",
+            $"{wholeTile} cells left");
+        Check(grid.IsTunnel(tile), "a fully chipped tile reads as open ground");
         Check(guard <= GridManager.GrainsPerCell * 4, "the tile opened in a sane number of grains");
     }
 
-    private int CountSolidCells(Vector2I tile)
+    private int CountSolidCells(Vector2I tile, int fromRow = 0)
     {
         Vector2I origin = MaterialWorld.TileToCellOrigin(tile);
         int solid = 0;
 
-        for (int y = 0; y < MaterialWorld.CellsPerTileAxis; y++)
+        for (int y = fromRow; y < MaterialWorld.CellsPerTileAxis; y++)
         {
             for (int x = 0; x < MaterialWorld.CellsPerTileAxis; x++)
             {
@@ -546,12 +687,12 @@ public partial class TerrainTests : Node
         materials.DeriveDirtyTiles();
     }
 
-    private int CountCellsIn(Vector2I tile, MaterialId want)
+    private int CountCellsIn(Vector2I tile, MaterialId want, int fromRow = 0)
     {
         Vector2I origin = MaterialWorld.TileToCellOrigin(tile);
         int found = 0;
 
-        for (int y = 0; y < MaterialWorld.CellsPerTileAxis; y++)
+        for (int y = fromRow; y < MaterialWorld.CellsPerTileAxis; y++)
         {
             for (int x = 0; x < MaterialWorld.CellsPerTileAxis; x++)
             {
@@ -601,12 +742,15 @@ public partial class TerrainTests : Node
 
         // A dug tunnel comes out empty. Nothing should be left lying in it - no loose grains, no
         // scattered blocks of soil that slumped in and settled on the floor.
+        //
+        // Measured over the channel only. The lip of earth a bore leaves overhead is the tunnel's
+        // ceiling, not litter in it.
         int litter = 0;
 
         for (int x = 0; x < 8; x++)
         {
-            litter += CountCellsIn(floor + new Vector2I(x, 0), MaterialId.Dirt)
-                + CountCellsIn(floor + new Vector2I(x, 0), MaterialId.LooseDirt);
+            litter += CountCellsIn(floor + new Vector2I(x, 0), MaterialId.Dirt, MaterialWorld.MaxCeilingCellRows)
+                + CountCellsIn(floor + new Vector2I(x, 0), MaterialId.LooseDirt, MaterialWorld.MaxCeilingCellRows);
         }
 
         Check(litter == 0, "a dug tunnel is left empty",
@@ -627,6 +771,176 @@ public partial class TerrainTests : Node
         Check(walkable >= 6, "a dug corridor is still walkable once the soil settles",
             $"{walkable} of 8 tiles standable");
 
+    }
+
+    // What a digger scrapes out has to survive the digging.
+    //
+    // The spoil material used to be sampled from the cell at the middle of the tile, and chipping
+    // clears cells in Bayer-dither order where that cell is the sixteenth of sixty-four visited -
+    // so it was already gone by the first or second of the four chips a tile takes, and every chip
+    // after that read back Air. Half of every tile's spoil evaporated before anybody carried it.
+    private void SpoilIsWhatTheTileIsMadeOf()
+    {
+        Vector2I tile = FindDiggableNear(grid.NestCenterCell + new Vector2I(-70, 9));
+
+        if (!grid.CanDig(tile))
+        {
+            Check(false, "a diggable tile could be found to scrape");
+            return;
+        }
+
+        Check(materials.SpoilFor(tile) == MaterialId.LooseDirt,
+            "an untouched tile yields loose soil", $"{materials.SpoilFor(tile)}");
+
+        // Three of the four grains gone - the state the old sampling read back as empty air.
+        for (int grain = 0; grain < GridManager.GrainsPerCell - 1; grain++)
+        {
+            grid.DigGrain(tile);
+        }
+
+        Check(materials.SpoilFor(tile) == MaterialId.LooseDirt,
+            "a tile three-quarters dug still yields loose soil", $"{materials.SpoilFor(tile)}");
+
+        // And loose soil, not packed earth. Dirt is Solid on purpose, so a heap of it would stand
+        // up in mid-air as a stack of cubes instead of slumping into a cone.
+        Check(MaterialDatabase.Get(MaterialId.LooseDirt).Kind == MaterialKind.Powder,
+            "spoil is a powder, so a tipped load slumps");
+
+        grid.Dig(tile);
+
+        Check(materials.SpoilFor(tile) == MaterialId.Air,
+            "an opened tile has nothing left to scrape", $"{materials.SpoilFor(tile)}");
+    }
+
+    // A load that will not fit stays on her back.
+    //
+    // Release used to return void and clear the list whatever happened, so every grain it could not
+    // place - because the column was full, or because it walked off the top of the world - was
+    // deleted with no accounting. Matter conservation here is checked to the cell elsewhere in this
+    // file, and this was a hole straight through it.
+    private void ReleaseHandsBackWhatItCannotPlace()
+    {
+        Vector2I solid = FindBuriedDiggableNear(grid.NestCenterCell + new Vector2I(-74, 14));
+
+        var carried = new List<MaterialId>();
+
+        for (int i = 0; i < 8; i++)
+        {
+            carried.Add(MaterialId.LooseDirt);
+        }
+
+        int before = Count(MaterialId.LooseDirt);
+        int leftover = materials.Release(solid, carried);
+
+        Check(leftover == 8, "a load tipped into solid ground is handed straight back", $"{leftover} of 8");
+        Check(carried.Count == 8, "and is still in her jaws", $"{carried.Count} grains");
+        Check(Count(MaterialId.LooseDirt) == before, "nothing was created on the way",
+            $"{before} became {Count(MaterialId.LooseDirt)}");
+
+        // The other half of the bargain: into open sky it all goes, and the list comes back empty.
+        Vector2I sky = new Vector2I(grid.NestCenterCell.X - 74, 4);
+
+        int placedBefore = Count(MaterialId.LooseDirt);
+        int stillHeld = materials.Release(sky, carried);
+
+        Check(stillHeld == 0, "a load tipped into open sky all lands", $"{stillHeld} left over");
+        Check(carried.Count == 0, "and her jaws come back empty", $"{carried.Count} grains");
+        Check(Count(MaterialId.LooseDirt) == placedBefore + 8, "every grain is accounted for",
+            $"{placedBefore} became {Count(MaterialId.LooseDirt)}");
+    }
+
+    // Digging into a spoil heap leaves sky, not tunnel.
+    //
+    // Dig wrote Tunnel unconditionally, which above the surface is both wrong and self-perpetuating:
+    // the next spoil to land in that tile makes the simulation report a blocked passage, which
+    // queues a dig job, which opens it again, which lets more spoil in.
+    private void DiggingInTheSkyLeavesSky()
+    {
+        Vector2I sky = new Vector2I(grid.NestCenterCell.X - 78, grid.SurfaceHeight - grid.GrassDepth - 3);
+
+        // Pile enough soil into it to make it solid ground, the way a spoil heap does.
+        materials.FillTile(sky, MaterialId.LooseDirt);
+        materials.DeriveDirtyTiles();
+
+        Check(!grid.IsTunnel(sky), "a tile full of spoil reads as solid ground",
+            $"{grid.GetTileAt(sky)}");
+
+        int obstructions = 0;
+        void CountObstruction(Vector2I cell) => obstructions++;
+
+        grid.TileObstructed += CountObstruction;
+
+        grid.Dig(sky);
+
+        Check(grid.GetTileAt(sky) == GridManager.TileType.Air,
+            "digging out a heap above the surface leaves sky", $"{grid.GetTileAt(sky)}");
+
+        // Refill it. Nothing should report a blocked passage, because there was never a corridor.
+        materials.FillTile(sky, MaterialId.LooseDirt);
+        materials.DeriveDirtyTiles();
+
+        grid.TileObstructed -= CountObstruction;
+
+        Check(obstructions == 0, "spoil settling back on a heap is not a blocked passage",
+            $"{obstructions} obstructions reported");
+    }
+
+    // A bored tunnel keeps a lip of earth overhead so the channel is the size of an ant. This is
+    // the failure that design most easily produces, and one the player has already been shown once:
+    // dig the tile above and the lip has nothing left to hang from, so it reads as a block of soil
+    // floating in mid-cavity.
+    private void BoredTunnelsLeaveNothingHanging()
+    {
+        Vector2I floor = FindDiggableNear(grid.NestCenterCell + new Vector2I(-60, 10));
+
+        // Lower row first, then the row above it - the order that turns a ceiling into a slab.
+        for (int x = 0; x < 4; x++)
+        {
+            grid.Dig(floor + new Vector2I(x, 0));
+        }
+
+        for (int x = 0; x < 4; x++)
+        {
+            grid.Dig(floor + new Vector2I(x, -1));
+        }
+
+        materials.DeriveDirtyTiles();
+
+        int hanging = 0;
+
+        for (int x = 0; x < 4; x++)
+        {
+            Vector2I tile = floor + new Vector2I(x, 0);
+
+            hanging += CountSolidCells(tile) - CountSolidCells(tile, MaterialWorld.MaxCeilingCellRows);
+        }
+
+        Check(hanging == 0, "nothing is left hanging under an opened tile", $"{hanging} cells");
+
+        // The other half of the bargain: a corridor with solid ground over it keeps its ceiling and
+        // still has to read as open ground, or the tile derives back to earth and the dig loops.
+        //
+        // Genuinely buried, rather than assumed to be. The surface is noise, so "fourteen tiles
+        // below the nest" is open sky at some values of x - which is how this first failed.
+        Vector2I lone = FindBuriedDiggableNear(grid.NestCenterCell + new Vector2I(70, 14));
+
+        if (!grid.CanDig(lone))
+        {
+            Check(false, "a buried tile could be found to bore");
+            return;
+        }
+
+        grid.Dig(lone);
+        materials.DeriveDirtyTiles();
+
+        int kept = CountSolidCells(lone) - CountSolidCells(lone, MaterialWorld.MaxCeilingCellRows);
+
+        Check(grid.IsTunnel(lone), "a bored tile reads as open ground");
+        Check(
+            CountSolidCells(lone, MaterialWorld.MaxCeilingCellRows) == 0,
+            "a bored tile's channel is empty",
+            $"{CountSolidCells(lone, MaterialWorld.MaxCeilingCellRows)} cells in the way");
+        Check(kept > 0, "a bored tile under solid ground keeps a ceiling", $"{kept} cells kept");
     }
 
     // Ants cement the walls they live behind. Slow on purpose, so this runs the clock rather than
@@ -651,7 +965,7 @@ public partial class TerrainTests : Node
         // The hardening sweep is driven from _Process, so give it real frames rather than ticks.
         for (int pass = 0; pass < 400; pass++)
         {
-            materials.HardenNestWallsForTest(0.25);
+            materials.CementWallsForTest(0.25);
         }
 
         int after = CountAround(nest, 8, MaterialId.HardenedDirt);
@@ -750,6 +1064,893 @@ public partial class TerrainTests : Node
         Check(placed.State == Room.RoomState.Active, "furnishing activates the room");
         Check(colony.Capacity > capacityBefore, "an activated nesting chamber raises the population cap",
             $"{capacityBefore} -> {colony.Capacity}");
+
+        // A room only owns cells it can actually use, and only draws and charges for those. Asserted
+        // against the cell set rather than the count, because the count is what used to be right
+        // while the drawing was still painting the whole bounding box.
+        bool ownsOnlyUsable = true;
+
+        foreach (Vector2I cell in placed.OwnedCells)
+        {
+            if (grid.GetTileAt(cell) == GridManager.TileType.Rock)
+            {
+                ownsOnlyUsable = false;
+            }
+        }
+
+        Check(ownsOnlyUsable, "a room owns no cell that is solid rock");
+        Check(placed.Contains(placed.StandCell), "the cell a furnisher is sent to belongs to the room");
+
+        RoomsCanBePulledDownAgain(build, colony, placed, capacityBefore);
+    }
+
+
+
+
+
+    // A worker who starves takes every claim she was holding with her.
+    //
+    // Nothing in this game used to free an ant at all - starvation decremented a counter and left
+    // her walking around - so every reference that outlives the scene tree is a new problem, and
+    // there is no second chance to let a claim go.
+    private void AStarvedAntTakesHerClaimsWithHer()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+        var selection = GetNode<SelectionManager>("Main/SelectionManager");
+
+        AntWorker victim = null;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is AntWorker worker)
+            {
+                victim = worker;
+                break;
+            }
+        }
+
+        if (victim == null)
+        {
+            Check(false, "there is a worker to starve");
+            return;
+        }
+
+        // Give her something of everything to be holding.
+        Vector2I food = default;
+        bool haveFood = grid.TryFindForageTarget(victim.Position, 40f * grid.CellSize, out food);
+
+        if (haveFood)
+        {
+            victim.CommandForage(food);
+        }
+
+        selection.Select(victim);
+
+        int antsBefore = colony.Ants;
+        int claimsBefore = build.ClaimedDigCellCount;
+        int obstructionsBefore = build.ObstructionCount;
+        Vector2I diedAt = grid.WorldToCell(victim.Position);
+
+        victim.Die();
+
+        Check(colony.Ants == antsBefore - 1, "the colony is one worker lighter",
+            $"{antsBefore} became {colony.Ants}");
+        Check(build.ClaimedDigCellCount <= claimsBefore, "she let go of any dig claim",
+            $"{claimsBefore} became {build.ClaimedDigCellCount}");
+        Check(build.ObstructionCount == obstructionsBefore,
+            "and did not take a blocked-passage job with her",
+            $"{obstructionsBefore} became {build.ObstructionCount}");
+
+        if (haveFood)
+        {
+            Check(grid.TryFindForageTarget(grid.CellToWorld(food), 3f * grid.CellSize, out _),
+                "the deposit she was walking to is offered to somebody else");
+        }
+
+        // Gone from the tree immediately, not at the end of the frame - a quicksave in the same
+        // frame would otherwise write her into the save.
+        bool stillThere = false;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child == victim)
+            {
+                stillThere = true;
+            }
+        }
+
+        Check(!stillThere, "and she is out of the colony at once");
+        Check(grid.IsCarrion(diedAt), "she leaves a body where she fell");
+        Check(grid.CarrionAt(diedAt) == AntCorpse.FoodValue, "worth what a worker is worth",
+            $"{grid.CarrionAt(diedAt)}");
+
+        // Which the colony can eat, but only when the player says so.
+        colony.SetEatTheDead(false);
+        Check(!grid.IsFoodSource(diedAt), "a body is refuse while the colony is not eating its dead");
+
+        colony.SetEatTheDead(true);
+        Check(grid.IsFoodSource(diedAt), "and food once it is");
+
+        int harvested = grid.Harvest(diedAt, AntCorpse.FoodValue);
+
+        Check(harvested == AntCorpse.FoodValue, "a body is worth a full meal", $"{harvested}");
+        Check(!grid.IsCarrion(diedAt), "and is gone once it has been eaten");
+
+        colony.SetEatTheDead(false);
+    }
+    // The job board must not lose work orders.
+    //
+    // ReleaseClaim used to drop the cell from the obstruction set as well as the claim set, which
+    // destroys the work order rather than handing it back - and TileObstructed only fires on a
+    // walkable-to-blocked transition, so nothing ever re-created it. Any redirect of the claiming
+    // ant permanently deleted the only record that a corridor had caved in.
+    private void ReleasingAClaimKeepsTheJob()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+
+        // A corridor cell, then filled in under her - exactly what settling spoil does.
+        Vector2I corridor = FindDiggableNear(grid.NestCenterCell + new Vector2I(-158, 12));
+        grid.Dig(corridor);
+        materials.DeriveDirtyTiles();
+
+        int before = build.ObstructionCount;
+        int claimsBefore = build.ClaimedDigCellCount;
+
+        grid.SetTileFromSimulation(corridor, GridManager.TileType.Dirt);
+
+        Check(build.ObstructionCount == before + 1, "a caved-in corridor raises a job",
+            $"{before} became {build.ObstructionCount}");
+
+        if (!build.TryClaimDigJob(grid.CellToWorld(corridor), out Vector2I claimed))
+        {
+            Check(false, "the job can be claimed");
+            return;
+        }
+
+        build.ReleaseClaim(claimed);
+
+        Check(build.ObstructionCount == before + 1, "releasing a claim does not delete the job",
+            $"{build.ObstructionCount} obstructions left");
+        // Measured against what the board was already holding. Earlier tests leave live claims of
+        // their own, so a global zero here would be asserting something about them instead.
+        Check(build.ClaimedDigCellCount == claimsBefore, "and the claim itself is let go",
+            $"{claimsBefore} became {build.ClaimedDigCellCount}");
+        Check(build.TryClaimDigJob(grid.CellToWorld(corridor), out _),
+            "so somebody else can pick it up");
+
+        build.ReleaseClaim(corridor);
+
+        // Dug back out, which is the other half of the contract: a job retires when it is genuinely
+        // done. Also stops this obstruction outranking every room in the tests that follow, since
+        // clearing blocked passages deliberately takes priority over starting new chambers.
+        grid.Dig(corridor);
+
+        Check(build.ObstructionCount == before, "and retires once the corridor is open again",
+            $"{build.ObstructionCount} obstructions left");
+    }
+
+    // A room cannot wait forever for ground nobody can move.
+    //
+    // A pending cell that turns to rock - lava meeting water leaves stone - was handed out forever,
+    // and the ant who walked to it dropped her claim without telling the board, so the cell stayed
+    // claimed and every future ant skipped it. The room stayed Excavating for the rest of the game.
+    private void ARoomGivesUpOnGroundThatTurnedToRock()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+
+        colony.AddFood(300);
+
+        Vector2I origin = FindDiggableNear(grid.NestCenterCell + new Vector2I(-170, 10));
+
+        // Dig all but one cell, so exactly one is pending and it is the one we petrify.
+        for (int x = 0; x < 3; x++)
+        {
+            for (int y = 0; y < 2; y++)
+            {
+                if (x != 2 || y != 1)
+                {
+                    grid.Dig(origin + new Vector2I(x, y));
+                }
+            }
+        }
+
+        materials.DeriveDirtyTiles();
+
+        if (!build.TryCreateRoom(new Rect2I(origin, new Vector2I(3, 2)), BuildingType.Granary))
+        {
+            Check(false, "a room could be placed over ground that will petrify");
+            return;
+        }
+
+        Room placed = null;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is Room room && room.Footprint.Position == origin)
+            {
+                placed = room;
+            }
+        }
+
+        if (placed == null || placed.State != Room.RoomState.Excavating)
+        {
+            Check(false, "the room starts out excavating", $"{placed?.State}");
+            return;
+        }
+
+        int cellsBefore = placed.CellCount;
+
+        // Whichever cell is actually still pending, rather than the one the layout suggests should
+        // be: generation puts rock where it likes, so which of the six the room ended up owning -
+        // and which of those Dig managed to open - is not something the test gets to assume.
+        Vector2I pending = default;
+        bool havePending = false;
+
+        foreach (Vector2I candidate in placed.PendingDigCells)
+        {
+            pending = candidate;
+            havePending = true;
+            break;
+        }
+
+        if (!havePending)
+        {
+            Check(false, "the room has a cell left to dig");
+            return;
+        }
+
+        grid.SetTileFromSimulation(pending, GridManager.TileType.Rock);
+
+        // The board is asked for work, which is when staleness gets noticed.
+        build.TryClaimDigJob(grid.CellToWorld(origin), out _);
+
+        Check(placed.State != Room.RoomState.Excavating,
+            "a room stops excavating ground that turned to rock", $"{placed.State}");
+        Check(placed.CellCount == cellsBefore - 1, "and stops counting it as its own",
+            $"{cellsBefore} became {placed.CellCount}");
+    }
+    // Pulling a room down out from under the worker furnishing it.
+    //
+    // Demolish frees the Room node, and a freed Godot node leaves a live C# wrapper behind - so the
+    // ant's `pendingRoom != null` check passed and the very next member access threw, inside a timer
+    // handler, where Godot prints the exception and swallows it. She was left in Building with no
+    // way out. Three separate dereferences had the same hole.
+    private void PullingDownARoomDoesNotStrandItsBuilder()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+
+        colony.AddFood(300);
+
+        Vector2I origin = FindDiggableNear(grid.NestCenterCell + new Vector2I(-146, 10));
+
+        for (int x = 0; x < 3; x++)
+        {
+            for (int y = 0; y < 2; y++)
+            {
+                grid.Dig(origin + new Vector2I(x, y));
+            }
+        }
+
+        materials.DeriveDirtyTiles();
+
+        if (!build.TryCreateRoom(new Rect2I(origin, new Vector2I(3, 2)), BuildingType.Granary))
+        {
+            Check(false, "a room could be placed to demolish");
+            return;
+        }
+
+        AntWorker builder = null;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is AntWorker worker)
+            {
+                builder = worker;
+                break;
+            }
+        }
+
+        Room placed = null;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is Room room && room.Footprint.Position == origin)
+            {
+                placed = room;
+            }
+        }
+
+        if (builder == null || placed == null)
+        {
+            Check(false, "a builder and a room to take from her");
+            return;
+        }
+
+        int capacityBefore = colony.Capacity;
+        int foodCapBefore = colony.FoodCapacity;
+
+        // She takes the job, then the player changes their mind.
+        build.SelectRoom(placed);
+        builder.CommandBuild(placed);
+        build.Demolish(placed);
+
+        Check(build.Selected == null, "demolishing clears the selection");
+
+        // The furnish timer fires anyway - this is the moment that used to throw.
+        builder.GetNode<Timer>("BuildTimer").EmitSignal(Timer.SignalName.Timeout);
+
+        Check(!builder.IsStalled, "her builder is not left with nothing to do");
+        Check(colony.FoodCapacity == foodCapBefore,
+            "a demolished room grants nothing when its timer fires",
+            $"{foodCapBefore} became {colony.FoodCapacity}");
+        Check(colony.Capacity == capacityBefore, "and no capacity either");
+    }
+    // An ant always has something pending.
+    //
+    // She is never left non-Walking with every timer stopped: no route, no callback, nothing to wake
+    // her. That state used to be reachable from four places, because GoIdle could be entered while
+    // she was still Digging or Building and PickWanderTarget then refused to do anything.
+    //
+    // Driven through the wander timer, which is the real signal that runs GoIdle, and fired on every
+    // worker in the colony whatever she happens to be doing - which is exactly the case that broke.
+    // No role can leave a worker with nothing pending, and no role can switch off clearing a
+    // cave-in.
+    //
+    // The first is the freeze invariant restated for roles: an ant always has a route in flight or
+    // a timer running. It holds by construction, because the wander fallback at the end of GoIdle
+    // is unconditional - but "holds by construction" is exactly the kind of claim that stops being
+    // true when somebody adds a fourth role, so it gets a test rather than a comment.
+    //
+    // The second is the rule the colony cannot survive without. A blocked passage can be the only
+    // way in or out, and it is reachable from every role deliberately: putting everybody on
+    // foraging duty must not be able to wall the nest in.
+    private void EveryRoleStillHasSomethingToDo()
+    {
+        var roles = new[] { AntRole.Digger, AntRole.Builder, AntRole.Forager };
+        int checkedAnts = 0;
+        int stalled = 0;
+
+        foreach (AntRole role in roles)
+        {
+            foreach (Node child in GetNode("Main").GetChildren())
+            {
+                if (child is not AntWorker ant)
+                {
+                    continue;
+                }
+
+                ant.ReassignTo(role);
+                ant.GetNode<Timer>("WanderTimer").EmitSignal(Timer.SignalName.Timeout);
+
+                checkedAnts++;
+
+                if (ant.IsStalled)
+                {
+                    stalled++;
+                }
+            }
+        }
+
+        Check(checkedAnts > 0, "there are workers to put through every role", $"{checkedAnts} checks");
+        Check(stalled == 0, "no role leaves a worker with nothing pending", $"{stalled} of {checkedAnts} stalled");
+
+        // A cave-in, and a colony with nobody assigned to digging.
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        Vector2I blocked = FindDiggableNear(grid.NestCenterCell + new Vector2I(4, 9));
+
+        build.NoticeObstructionForTest(blocked);
+
+        int claimedByNonDiggers = 0;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is not AntWorker ant)
+            {
+                continue;
+            }
+
+            ant.ReassignTo(AntRole.Forager);
+
+            if (build.TryClaimObstruction(ant.Position, out Vector2I got))
+            {
+                claimedByNonDiggers++;
+                build.ReleaseClaim(got);
+            }
+        }
+
+        Check(claimedByNonDiggers > 0, "a cave-in can be claimed by a worker who is not a digger",
+            $"{claimedByNonDiggers} foragers could take it");
+    }
+
+    private void AnIdleAntAlwaysFindsSomethingToDo()
+    {
+        int checked_ = 0;
+        int stalled = 0;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is not AntWorker ant)
+            {
+                continue;
+            }
+
+            ant.GetNode<Timer>("WanderTimer").EmitSignal(Timer.SignalName.Timeout);
+
+            checked_++;
+
+            if (ant.IsStalled)
+            {
+                stalled++;
+            }
+        }
+
+        Check(checked_ > 0, "there are workers to check", $"{checked_} ants");
+        Check(stalled == 0, "no worker is left with nothing pending after going idle",
+            $"{stalled} of {checked_} stalled");
+    }
+    // Each chamber is a chamber, not part of an open-plan cavern.
+
+    // Ants plaster the wall of a finished chamber, the same way they plaster the burrow.
+    //
+    // Two properties matter more than the plastering itself, and both are asserted here.
+    //
+    // Cementing must never change a tile's derived type. SetCell only ever swaps one solid-or-powder
+    // material for another and DeriveTile counts Solid and Powder identically, so hardening cannot
+    // seal a doorway, cannot bury an ant, and cannot flip an open tile shut. That is the whole
+    // reason it is safe to run a sweep over a room somebody is standing in.
+    //
+    // And hardened earth is still diggable - it derives to TileType.Dirt, so CanDig stays true. The
+    // wall stops pathing and stops loose spoil slumping through it; it does not stop an ant. A
+    // chamber whose walls could not be dug would be a chamber nobody could reach.
+    private void RoomWallsCementThemselves()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+
+        colony.AddFood(300);
+
+        Vector2I origin = grid.NestCenterCell + new Vector2I(-118, 10);
+        var footprint = new Rect2I(origin, new Vector2I(3, 2));
+
+        // Dug out in advance, so the room goes straight to furnishing and starts cementing.
+        for (int x = 0; x < 3; x++)
+        {
+            for (int y = 0; y < 2; y++)
+            {
+                grid.Dig(origin + new Vector2I(x, y));
+            }
+        }
+
+        // A doorway, so this is a chamber off a corridor rather than a sealed pocket.
+        Vector2I doorway = origin + new Vector2I(-1, 1);
+        grid.Dig(doorway);
+
+        materials.DeriveDirtyTiles();
+
+        if (!build.TryCreateRoom(footprint, BuildingType.Granary))
+        {
+            Check(false, "a room could be placed to cement");
+            return;
+        }
+
+        Room placed = null;
+
+        foreach (Node child in GetNode("Main").GetChildren())
+        {
+            if (child is Room room && room.Footprint.Position == origin)
+            {
+                placed = room;
+            }
+        }
+
+        Check(placed != null, "the room to cement exists");
+
+        if (placed == null)
+        {
+            return;
+        }
+
+        // What the ring looks like before anybody plasters it, so the assertions below are about
+        // the sweep rather than about the terrain.
+        var typesBefore = new Dictionary<Vector2I, GridManager.TileType>();
+        int hardenedBefore = 0;
+
+        foreach (Vector2I cell in RingCellsOf(footprint))
+        {
+            typesBefore[cell] = grid.GetTileAt(cell);
+            hardenedBefore += CountCellsIn(cell, MaterialId.HardenedDirt);
+        }
+
+        // The sweep is driven from _Process, so give it real frames rather than ticks.
+        for (int pass = 0; pass < 400; pass++)
+        {
+            materials.CementWallsForTest(0.25);
+        }
+
+        materials.DeriveDirtyTiles();
+
+        int hardenedAfter = 0;
+        int changedType = 0;
+
+        foreach (Vector2I cell in RingCellsOf(footprint))
+        {
+            hardenedAfter += CountCellsIn(cell, MaterialId.HardenedDirt);
+
+            if (grid.GetTileAt(cell) != typesBefore[cell])
+            {
+                changedType++;
+            }
+        }
+
+        Check(hardenedAfter > hardenedBefore, "ants cement the wall around a finished chamber",
+            $"{hardenedBefore} became {hardenedAfter}");
+        Check(changedType == 0, "cementing never changes what a tile is",
+            $"{changedType} ring tiles changed type");
+        Check(grid.IsTunnel(doorway), "the doorway is still open");
+        Check(grid.CanDig(origin + new Vector2I(-1, 0)), "a cemented wall can still be dug through");
+
+        // And a room that has been pulled down stops being plastered, or the colony keeps
+        // maintaining a chamber that no longer exists - a leak nothing would ever complain about.
+        build.Demolish(placed);
+
+        int afterDemolish = 0;
+
+        foreach (Vector2I cell in RingCellsOf(footprint))
+        {
+            afterDemolish += CountCellsIn(cell, MaterialId.HardenedDirt);
+        }
+
+        for (int pass = 0; pass < 200; pass++)
+        {
+            materials.CementWallsForTest(0.25);
+        }
+
+        int afterMore = 0;
+
+        foreach (Vector2I cell in RingCellsOf(footprint))
+        {
+            afterMore += CountCellsIn(cell, MaterialId.HardenedDirt);
+        }
+
+        Check(afterMore == afterDemolish, "a demolished chamber stops being plastered",
+            $"{afterDemolish} became {afterMore}");
+    }
+
+    private List<Vector2I> RingCellsOf(Rect2I footprint)
+    {
+        var cells = new List<Vector2I>();
+        Rect2I ring = footprint.Grow(1);
+
+        for (int x = ring.Position.X; x < ring.Position.X + ring.Size.X; x++)
+        {
+            for (int y = ring.Position.Y; y < ring.Position.Y + ring.Size.Y; y++)
+            {
+                if (!footprint.HasPoint(new Vector2I(x, y)))
+                {
+                    cells.Add(new Vector2I(x, y));
+                }
+            }
+        }
+
+        return cells;
+    }
+    //
+    // Nothing used to look outside a footprint at all, so two rooms could share an open edge and a
+    // room could be placed in mid-air. Both rules are checked through the same public entry point
+    // the drag-to-place UI uses, so passing here means the UI behaves the same way.
+    private void RoomsNeedWallsAroundThem()
+    {
+        var build = GetNode<BuildManager>("Main/BuildManager");
+        var colony = GetNode<ColonyManager>("Main/ColonyManager");
+
+        colony.AddFood(400);
+
+        Vector2I origin = grid.NestCenterCell + new Vector2I(-90, 9);
+
+        // A floor first, so "no floor" cannot be the reason any of these are refused.
+        for (int x = -2; x < 14; x++)
+        {
+            materials.FillTile(origin + new Vector2I(x, 2), MaterialId.Stone);
+        }
+
+        materials.DeriveDirtyTiles();
+
+        Check(build.TryCreateRoom(new Rect2I(origin, new Vector2I(3, 2)), BuildingType.Granary),
+            "a room can be placed in virgin earth");
+
+        // Butted straight up against it: no wall at all between the two, which is the open-plan
+        // cavern this rule exists to prevent.
+        Check(!build.TryCreateRoom(new Rect2I(origin + new Vector2I(3, 0), new Vector2I(3, 2)), BuildingType.Granary),
+            "a room touching its neighbour is refused");
+
+        // One tile of earth between them is exactly the rule, so this one goes up.
+        Check(build.TryCreateRoom(new Rect2I(origin + new Vector2I(4, 0), new Vector2I(3, 2)), BuildingType.Granary),
+            "a room one tile clear of its neighbour is accepted");
+
+        // Diagonally touching counts too. Corners are part of the shell, and two chambers meeting
+        // at a point have no wall between them however you draw it.
+        Check(!build.TryCreateRoom(new Rect2I(origin + new Vector2I(-2, 2), new Vector2I(2, 2)), BuildingType.Granary),
+            "a room touching a neighbour at the corner is refused");
+
+        // And a chamber needs something underneath it.
+        Vector2I sky = new Vector2I(grid.NestCenterCell.X - 90, 3);
+
+        Check(!build.TryCreateRoom(new Rect2I(sky, new Vector2I(3, 2)), BuildingType.Granary),
+            "a room in open sky is refused");
+
+        // A hole in the floor, forced open rather than dug: generation puts rock wherever it likes,
+        // and a Dig that quietly refused would leave the floor intact and this testing nothing.
+        Vector2I hollow = grid.NestCenterCell + new Vector2I(-90, 14);
+        int floorRow = hollow.Y + 2;
+        int open = 0;
+
+        for (int x = 0; x < 3; x++)
+        {
+            grid.SetTileFromSimulation(new Vector2I(hollow.X + x, floorRow), GridManager.TileType.Tunnel);
+
+            if (grid.IsTunnel(new Vector2I(hollow.X + x, floorRow)))
+            {
+                open++;
+            }
+        }
+
+        Check(open == 3, "the floor under the test patch really is open", $"{open} of 3 cells open");
+
+        Check(!build.TryCreateRoom(new Rect2I(hollow, new Vector2I(3, 2)), BuildingType.Granary),
+            "a room with a hole in its floor is refused");
+
+        // A cavern is not a chamber. Dug wide and open, so more than half the ring is gone.
+        Vector2I cavern = grid.NestCenterCell + new Vector2I(-104, 12);
+
+        for (int x = -1; x < 6; x++)
+        {
+            for (int y = -1; y < 4; y++)
+            {
+                grid.Dig(cavern + new Vector2I(x, y));
+                grid.SetTileFromSimulation(cavern + new Vector2I(x, y), GridManager.TileType.Tunnel);
+            }
+        }
+
+        // A floor under it, so "nowhere to stand" cannot be the reason.
+        for (int x = -1; x < 6; x++)
+        {
+            materials.FillTile(cavern + new Vector2I(x, 4), MaterialId.Stone);
+            grid.SetTileFromSimulation(cavern + new Vector2I(x, 4), GridManager.TileType.Rock);
+        }
+
+        materials.DeriveDirtyTiles();
+
+        Check(!build.TryCreateRoom(new Rect2I(cavern, new Vector2I(4, 2)), BuildingType.Granary),
+            "a room carved out of an open cavern is refused");
+    }
+
+    // A misplaced room used to be permanent: no way to select it, no way to remove it, and its food
+    // gone for good. Pulling one down has to give back what it is fair to give back and, crucially,
+    // take its effect off again - a demolished chamber that kept raising the population cap would be
+    // free capacity for the price of one room.
+    private void RoomsCanBePulledDownAgain(BuildManager build, ColonyManager colony, Room room, int capacityBefore)
+    {
+        BuildingDef def = BuildingDefs.All[room.Type];
+        int cells = room.CellCount;
+        int expectedRefund = Mathf.FloorToInt(def.FoodCostPerCell * cells * 0.5f);
+
+        // Room for the refund to land in, or AddFood clamps it at the ceiling and the assertion
+        // below measures the larder rather than the refund.
+        colony.RemoveFood(Mathf.Min(colony.Food, expectedRefund + 10));
+
+        int foodBefore = colony.Food;
+        Vector2I inside = room.StandCell;
+
+        build.SelectRoom(room);
+        Check(build.Selected == room, "a placed room can be selected");
+        Check(build.RoomAt(inside) == room, "clicking a cell finds the room that owns it");
+
+        build.Demolish(room);
+
+        Check(build.Selected == null, "pulling a room down clears the selection");
+        Check(build.RoomAt(inside) == null, "a demolished room no longer owns its cells");
+        Check(colony.Capacity == capacityBefore, "demolishing gives back the capacity it granted",
+            $"{capacityBefore} -> {colony.Capacity}");
+        Check(colony.Food == foodBefore + expectedRefund, "demolishing refunds half the food",
+            $"expected {foodBefore + expectedRefund}, got {colony.Food}");
+
+        // The ground stays dug. Only the room is gone.
+        Check(grid.IsTunnel(inside), "a demolished room leaves its cavity behind");
+    }
+
+    // Routes are simplified before an ant walks them: waypoints she does not have to turn at get
+    // dropped, so a staircase becomes a glide. The danger is that a shortcut describes a move the
+    // ant is not allowed to make.
+    //
+    // Ants walk, they do not climb - MoveDirections has no vertical entry, so elevation only ever
+    // changes alongside horizontal movement. A simplified segment steeper than 45 degrees would be
+    // a climb however open the ground between its ends happens to be, and the ant would either stall
+    // against it or slide up a wall. That is the thing this guards.
+    private void SmoothedRoutesStayWalkable()
+    {
+        // Its own corridor, cut for the purpose.
+        //
+        // This used to route from the nest to whatever the spoil drop-off happened to be, which
+        // coupled a pathfinding test to where the colony tips its earth - and to the twenty loads of
+        // sand an earlier test dumps on the surface and never clears up. It started failing with a
+        // one-cell route because the surface walkway near the nest had been buried by a test that
+        // has nothing to do with route smoothing.
+        Vector2I start = FindDiggableNear(grid.NestCenterCell + new Vector2I(-130, 11));
+
+        for (int step = 0; step < 14; step++)
+        {
+            // A descending staircase, which is the shape simplification exists to collapse.
+            grid.Dig(start + new Vector2I(step, step / 3));
+        }
+
+        materials.DeriveDirtyTiles();
+
+        Vector2I finish = start + new Vector2I(13, 13 / 3);
+
+        if (!grid.IsStandable(start) || !grid.IsStandable(finish))
+        {
+            Check(false, "a corridor could be cut to route along",
+                $"{grid.IsStandable(start)} .. {grid.IsStandable(finish)}");
+            return;
+        }
+
+        List<Vector2I> route = grid.FindTunnelPath(start, finish);
+
+        Check(route != null && route.Count >= 2, "there is a route to simplify", $"{route?.Count ?? 0} cells");
+
+        if (route == null || route.Count < 2)
+        {
+            return;
+        }
+
+        Check(route[0] == start && route[^1] == finish, "simplifying keeps both ends of the route",
+            $"{route[0]} .. {route[^1]}");
+
+        int climbs = 0;
+
+        for (int i = 1; i < route.Count; i++)
+        {
+            Vector2I step = route[i] - route[i - 1];
+
+            if (Mathf.Abs(step.Y) > Mathf.Abs(step.X))
+            {
+                climbs++;
+            }
+        }
+
+        Check(climbs == 0, "no simplified segment climbs faster than it walks",
+            $"{climbs} of {route.Count - 1} segments are steeper than 45 degrees");
+
+        // And every cell a segment passes over has to be somewhere she could stand, or the shortcut
+        // is cutting a corner through rock.
+        int unwalkable = 0;
+
+        for (int i = 1; i < route.Count; i++)
+        {
+            if (!grid.IsWalkableLineForTest(route[i - 1], route[i]))
+            {
+                unwalkable++;
+            }
+        }
+
+        Check(unwalkable == 0, "every simplified segment stays on standable ground",
+            $"{unwalkable} segments cross ground she cannot walk");
+    }
+
+    // What weighting the search actually bought.
+    //
+    // Under the old unweighted search a zigzag was free: down-right then up-right is two moves for
+    // a net two cells sideways, exactly what right-then-right costs, so the planner was genuinely
+    // indifferent between a flat corridor and one that bobbed up and down the whole way. Asserted
+    // on the expanded route rather than the simplified one, because simplification hides the
+    // symptom - the point is that the shape is no longer *chosen*.
+    private void RoutesDoNotBobUpAndDown()
+    {
+        // A flat floor with headroom, cut on purpose: on generated terrain a route that rises and
+        // falls may be the only route there is, and this has to distinguish "chose to zigzag" from
+        // "had to".
+        const int Cut = 24;
+        const int MinRun = 10;
+
+        Vector2I floor = FindDiggableNear(grid.NestCenterCell + new Vector2I(-40, 12));
+
+        for (int x = 0; x < Cut; x++)
+        {
+            grid.Dig(floor + new Vector2I(x, 0));
+            grid.Dig(floor + new Vector2I(x, -1));
+        }
+
+        materials.DeriveDirtyTiles();
+
+        // The longest run that is genuinely flat, rather than the run asked for.
+        //
+        // Generation is free to have put a cavity under part of this patch, and a cell with no
+        // floor beneath it is not standable however thoroughly it has been dug. Measuring the run
+        // instead of forcing it keeps the test about the planner: on terrain where leaving the row
+        // is the only way through, a route that leaves the row is right to.
+        int runStart = 0;
+        int runLength = 0;
+        int current = 0;
+
+        for (int x = 0; x < Cut; x++)
+        {
+            current = grid.IsStandable(floor + new Vector2I(x, 0)) ? current + 1 : 0;
+
+            if (current > runLength)
+            {
+                runLength = current;
+                runStart = x - current + 1;
+            }
+        }
+
+        Check(runLength >= MinRun, "a flat corridor could be cut to route along",
+            $"longest flat run is {runLength} of {Cut}");
+
+        if (runLength < MinRun)
+        {
+            return;
+        }
+
+        Vector2I from = floor + new Vector2I(runStart, 0);
+        Vector2I to = floor + new Vector2I(runStart + runLength - 1, 0);
+
+        List<Vector2I> cells = ExpandRoute(grid.FindTunnelPath(from, to));
+
+        Check(cells != null, "there is a route along the flat corridor");
+
+        if (cells == null)
+        {
+            return;
+        }
+
+        // Both ends are on the same row and the whole corridor is standable, so the cheapest route
+        // is sixteen sideways steps and anything that leaves the row is paying 14 for a 10 it did
+        // not need.
+        int offRow = 0;
+
+        foreach (Vector2I cell in cells)
+        {
+            if (cell.Y != from.Y)
+            {
+                offRow++;
+            }
+        }
+
+        Check(offRow == 0, "a route across flat ground stays on the flat",
+            $"{offRow} of {cells.Count} cells wander off the row");
+
+        Check(cells.Count == runLength, "and covers it in one step per cell",
+            $"{cells.Count} cells across a run of {runLength}");
+    }
+
+    // Every cell a route passes over, not just the corners it turns at.
+    private List<Vector2I> ExpandRoute(List<Vector2I> route)
+    {
+        if (route == null)
+        {
+            return null;
+        }
+
+        var cells = new List<Vector2I> { route[0] };
+
+        for (int i = 1; i < route.Count; i++)
+        {
+            Vector2I from = route[i - 1];
+            Vector2I delta = route[i] - from;
+            int steps = Mathf.Max(Mathf.Abs(delta.X), Mathf.Abs(delta.Y));
+
+            for (int step = 1; step <= steps; step++)
+            {
+                cells.Add(new Vector2I(
+                    from.X + Mathf.RoundToInt(delta.X * step / (float)steps),
+                    from.Y + Mathf.RoundToInt(delta.Y * step / (float)steps)));
+            }
+        }
+
+        return cells;
     }
 
     private int CountAround(Vector2I tile, int radius, MaterialId want)

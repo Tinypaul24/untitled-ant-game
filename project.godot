@@ -22,10 +22,15 @@ window/size/viewport_height=360
 window/size/window_width_override=1280
 window/size/window_height_override=720
 window/stretch/mode="viewport"
+window/stretch/scale_mode="integer"
 
 [dotnet]
 
 project/assembly_name="Untitled Ant game"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")
 
 [gui]
 

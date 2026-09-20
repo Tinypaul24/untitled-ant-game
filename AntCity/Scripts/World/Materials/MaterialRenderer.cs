@@ -28,7 +28,7 @@ public partial class MaterialRenderer : Node2D
     {
         camera = GetNode<Camera2D>("../Camera2D");
 
-        // Material cells are 4px blocks; smoothing them would turn crisp pixel terrain to mush.
+        // Material cells are 2px blocks; smoothing them would turn crisp pixel terrain to mush.
         TextureFilter = TextureFilterEnum.Nearest;
     }
 
